@@ -5,12 +5,12 @@ import { ref } from 'vue'
 const message = ref('')
 const loading = ref(false)
 
-async function testGreet() {
+async function testConnection() {
   loading.value = true
   try {
-    message.value = await invoke('greet', { name: '修仙者' })
+    message.value = await invoke('greet', { name: 'LingJian' })
   } catch (e) {
-    message.value = `错误: ${e}`
+    message.value = `Error: ${e}`
   } finally {
     loading.value = false
   }
@@ -25,7 +25,7 @@ async function testGreet() {
     </section>
 
     <section class="actions">
-      <button class="btn btn-gold" @click="testGreet" :disabled="loading">
+      <button class="btn btn-primary" @click="testConnection" :disabled="loading">
         {{ loading ? '连接中...' : '测试后端连接' }}
       </button>
       <p v-if="message" class="response">{{ message }}</p>
@@ -47,8 +47,7 @@ async function testGreet() {
 .hero-title {
   font-size: 2rem;
   font-weight: 700;
-  color: var(--color-gold);
-  letter-spacing: 0.15em;
+  color: var(--color-text-bright);
 }
 
 .version {
@@ -70,12 +69,13 @@ async function testGreet() {
 }
 
 .btn {
-  padding: 0.6rem 1.5rem;
+  padding: 0.5rem 1.25rem;
   border: none;
   border-radius: var(--radius-md);
-  font-size: 0.9rem;
+  font-size: 0.875rem;
+  font-weight: 500;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all var(--transition-fast);
 }
 
 .btn:disabled {
@@ -83,21 +83,19 @@ async function testGreet() {
   cursor: not-allowed;
 }
 
-.btn-gold {
-  background: linear-gradient(135deg, var(--color-gold-dim), var(--color-gold));
-  color: #0a0e1a;
-  font-weight: 600;
+.btn-primary {
+  background-color: var(--color-primary);
+  color: #fff;
 }
 
-.btn-gold:hover:not(:disabled) {
-  background: linear-gradient(135deg, var(--color-gold), var(--color-gold-bright));
-  box-shadow: 0 0 16px rgba(212, 168, 67, 0.3);
+.btn-primary:hover:not(:disabled) {
+  background-color: var(--color-primary-hover);
 }
 
 .response {
   margin-top: 1rem;
   padding: 0.75rem 1rem;
-  background-color: var(--color-surface-alt);
+  background-color: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   font-family: var(--font-mono);

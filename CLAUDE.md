@@ -39,7 +39,7 @@ Path of Idle Immortals 日志分析工具 — 独立桌面应用（Tauri 2 + Vue
 | 前端 | Vue 3 + TypeScript + Vite |
 | 后端 | Rust (reqwest, flate2, serde, rusqlite, regex) |
 | 图表 | Chart.js |
-| 主题 | 仙侠风格（墨蓝 + 灵光金） |
+| 主题 | 深色专业风格（Slate Dark + Blue） |
 
 ## 开发命令
 

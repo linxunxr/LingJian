@@ -2,17 +2,30 @@
 import { RouterView, RouterLink, useRoute } from 'vue-router'
 
 const route = useRoute()
+
+const navItems = [
+  { to: '/', name: 'home', label: '首页' },
+  { to: '/analyze', name: 'analyze', label: '分析' },
+  { to: '/settings', name: 'settings', label: '设置' },
+]
 </script>
 
 <template>
   <div class="app">
     <header class="app-header">
-      <h1 class="app-title">灵鉴</h1>
-      <span class="app-subtitle">日志分析工具</span>
+      <div class="app-brand">
+        <h1 class="app-title">灵鉴</h1>
+        <span class="app-subtitle">日志分析工具</span>
+      </div>
       <nav class="app-nav">
-        <RouterLink to="/" :class="{ active: route.name === 'home' }">首页</RouterLink>
-        <RouterLink to="/analyze" :class="{ active: route.name === 'analyze' }">分析</RouterLink>
-        <RouterLink to="/settings" :class="{ active: route.name === 'settings' }">设置</RouterLink>
+        <RouterLink
+          v-for="item in navItems"
+          :key="item.name"
+          :to="item.to"
+          :class="['nav-link', { active: route.name === item.name }]"
+        >
+          {{ item.label }}
+        </RouterLink>
       </nav>
     </header>
     <main class="app-main">
@@ -32,26 +45,56 @@ const route = useRoute()
 
 .app-header {
   display: flex;
-  align-items: baseline;
-  gap: 0.5rem;
-  padding: 0.75rem 1.5rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 1.5rem;
+  height: 48px;
   background-color: var(--color-surface);
   border-bottom: 1px solid var(--color-border);
   -webkit-user-select: none;
   user-select: none;
 }
 
+.app-brand {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
 .app-title {
-  font-size: 1.25rem;
-  font-weight: 600;
-  color: var(--color-gold);
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: var(--color-text-bright);
   margin: 0;
-  letter-spacing: 0.1em;
 }
 
 .app-subtitle {
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   color: var(--color-text-muted);
+}
+
+.app-nav {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.nav-link {
+  padding: 0.375rem 0.75rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-text-muted);
+  border-radius: var(--radius-sm);
+  transition: color var(--transition-fast), background-color var(--transition-fast);
+}
+
+.nav-link:hover {
+  color: var(--color-text);
+  background-color: var(--color-surface-alt);
+}
+
+.nav-link.active {
+  color: var(--color-primary);
+  background-color: rgba(59, 130, 246, 0.1);
 }
 
 .app-main {
