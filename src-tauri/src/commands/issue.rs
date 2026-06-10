@@ -16,7 +16,7 @@ pub async fn parse_issue_url(url: String) -> Result<IssueInfo, String> {
 }
 
 #[tauri::command]
-pub async fn fetch_issue_info(owner: String, repo: String, number: u32) -> Result<IssueInfo, String> {
+pub async fn fetch_issue_info(_owner: String, _repo: String, _number: u32) -> Result<IssueInfo, String> {
     // TODO: 实现通过 GitHub API 获取 Issue 信息并解析 reportId
     Err("尚未实现".into())
 }

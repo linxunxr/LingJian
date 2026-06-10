@@ -8,7 +8,7 @@ pub struct DownloadResult {
 }
 
 #[tauri::command]
-pub async fn download_log(report_id: String) -> Result<DownloadResult, String> {
+pub async fn download_log(_report_id: String) -> Result<DownloadResult, String> {
     // TODO: 实现 COS 日志下载 + gzip 解压
     Err("尚未实现".into())
 }

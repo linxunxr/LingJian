@@ -8,7 +8,7 @@ pub struct AnalysisResult {
 }
 
 #[tauri::command]
-pub async fn analyze_log(report_id: String) -> Result<AnalysisResult, String> {
+pub async fn analyze_log(_report_id: String) -> Result<AnalysisResult, String> {
     // TODO: 实现日志分析
     Err("尚未实现".into())
 }
