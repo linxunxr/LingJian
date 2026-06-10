@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { RouterView } from 'vue-router'
+import { RouterView, RouterLink, useRoute } from 'vue-router'
+
+const route = useRoute()
 </script>
 
 <template>
@@ -7,6 +9,11 @@ import { RouterView } from 'vue-router'
     <header class="app-header">
       <h1 class="app-title">灵鉴</h1>
       <span class="app-subtitle">日志分析工具</span>
+      <nav class="app-nav">
+        <RouterLink to="/" :class="{ active: route.name === 'home' }">首页</RouterLink>
+        <RouterLink to="/analyze" :class="{ active: route.name === 'analyze' }">分析</RouterLink>
+        <RouterLink to="/settings" :class="{ active: route.name === 'settings' }">设置</RouterLink>
+      </nav>
     </header>
     <main class="app-main">
       <RouterView />

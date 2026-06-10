@@ -1,9 +1,8 @@
-use tauri::Manager;
+mod commands;
+mod models;
+mod services;
 
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("你好，{}！灵鉴已就绪。", name)
-}
+use commands::{issue, download, analyze};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -12,7 +11,12 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![
+            issue::parse_issue_url,
+            issue::fetch_issue_info,
+            download::download_log,
+            analyze::analyze_log,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
