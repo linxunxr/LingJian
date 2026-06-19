@@ -28,6 +28,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             // 数据目录：<app_data_dir>/cache 存 gzip，<app_data_dir>/lingjian.db 存库
             let data_dir = app

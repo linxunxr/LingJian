@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useSettings, saveSettings } from '@/composables/useSettings'
+import UpdateCard from '@/components/UpdateCard.vue'
 
 const { settings, loadSettings } = useSettings()
 
@@ -123,6 +124,8 @@ onMounted(loadSettings)
       <p>灵鉴 LingJian v0.1.0</p>
       <p class="muted">Path of Idle Immortals 日志分析工具</p>
     </section>
+
+    <UpdateCard />
   </div>
 </template>
 

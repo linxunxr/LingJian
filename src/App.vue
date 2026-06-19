@@ -4,6 +4,7 @@ import { RouterView, RouterLink, useRoute, useRouter } from 'vue-router'
 import { LazyStore } from '@tauri-apps/plugin-store'
 import Onboarding from '@/components/Onboarding.vue'
 import { loadSettings, isSettingsComplete } from '@/composables/useSettings'
+import { checkForUpdate, state as updaterState } from '@/composables/useUpdater'
 
 const route = useRoute()
 const router = useRouter()
@@ -40,6 +41,8 @@ onMounted(async () => {
   if (!onboarded && !isSettingsComplete()) {
     showOnboarding.value = true
   }
+  // 启动时静默检查更新（失败不提示，仅在设置页可见）
+  checkForUpdate().catch(() => {})
 })
 
 onUnmounted(() => {
@@ -68,6 +71,9 @@ async function closeOnboarding() {
           :class="['nav-link', { active: route.name === item.name }]"
         >
           {{ item.label }}
+        </RouterLink>
+        <RouterLink v-if="updaterState.status === 'available'" :to="{ name: 'settings' }" class="nav-update">
+          <span class="update-dot" /> 新版本
         </RouterLink>
       </nav>
     </header>
@@ -139,6 +145,35 @@ async function closeOnboarding() {
 .nav-link.active {
   color: var(--color-primary);
   background-color: rgba(59, 130, 246, 0.1);
+}
+
+.nav-update {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.375rem 0.75rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-success);
+  border-radius: var(--radius-sm);
+  transition: background-color var(--transition-fast);
+}
+
+.nav-update:hover {
+  background-color: rgba(34, 197, 94, 0.1);
+}
+
+.update-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--color-success);
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
 
 .app-main {
