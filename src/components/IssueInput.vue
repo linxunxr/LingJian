@@ -26,6 +26,7 @@ function onSubmit() {
       type="text"
       placeholder="输入 Issue URL、编号 (#42) 或 reportId..."
       :disabled="loading"
+      data-shortcut="search"
       @keydown.enter="onSubmit"
     />
     <button

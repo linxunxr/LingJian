@@ -57,6 +57,7 @@ function clearAll() {
         class="keyword-input"
         type="text"
         placeholder="搜索关键词..."
+        data-shortcut="search"
       />
       <span class="total">共 {{ total }} 条</span>
     </div>
