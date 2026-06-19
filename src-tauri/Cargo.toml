@@ -26,3 +26,6 @@ regex = "1"
 log = "0.4"
 chrono = "0.4"
 keyring = "3"
+
+[dev-dependencies]
+tempfile = "3"

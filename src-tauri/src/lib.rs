@@ -8,8 +8,9 @@ use std::sync::Arc;
 use tauri::Manager;
 
 use services::cache::Cache;
+use services::paths;
 
-use commands::{analyze, download, export_, issue, reports, secret, settings};
+use commands::{analyze, download, export_, issue, reports, secret, settings, storage};
 
 /// 全局共享的应用状态
 pub struct AppState {
@@ -19,6 +20,10 @@ pub struct AppState {
     pub cache: Arc<Cache>,
     /// 日志 .gz 缓存目录
     pub cache_dir: PathBuf,
+    /// 当前生效的数据目录（db + cache 所在）
+    pub data_dir: PathBuf,
+    /// 系统默认目录（标记文件存放处，用于目录切换）
+    pub fallback_dir: PathBuf,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -30,11 +35,15 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
-            // 数据目录：<app_data_dir>/cache 存 gzip，<app_data_dir>/lingjian.db 存库
-            let data_dir = app
+            // 系统默认目录（C 盘），仅用于存放 data_dir.txt 标记文件
+            let fallback_dir = app
                 .path()
                 .app_data_dir()
                 .expect("无法获取应用数据目录");
+            std::fs::create_dir_all(&fallback_dir).expect("无法创建应用目录");
+
+            // 解析生效数据目录：优先 exe 同级 data/，无写权限则降级到 fallback
+            let data_dir = paths::resolve_data_dir(&fallback_dir);
             std::fs::create_dir_all(&data_dir).expect("无法创建数据目录");
 
             let cache_dir = data_dir.join("cache");
@@ -52,6 +61,8 @@ pub fn run() {
                 client,
                 cache,
                 cache_dir,
+                data_dir,
+                fallback_dir,
             });
             Ok(())
         })
@@ -68,6 +79,10 @@ pub fn run() {
             secret::delete_secret,
             settings::verify_github_token,
             settings::test_scf_endpoint,
+            storage::get_storage_info,
+            storage::change_data_dir,
+            storage::get_cache_size,
+            storage::clear_cache,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
