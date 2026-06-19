@@ -1,1 +1,172 @@
-// TODO: 实现 COS 日志下载 + 解压服务
+use flate2::read::GzDecoder;
+use serde::Deserialize;
+use std::io::Read;
+use std::path::Path;
+
+use crate::models::log_entry::{LogEntry, LogLevel};
+
+/// SCF 下载端点返回的 gzip 包解压后的 JSON 结构
+#[derive(Debug, Deserialize)]
+struct LogPayload {
+    #[serde(default)]
+    #[allow(dead_code)]
+    exported_at: Option<String>,
+    logs: Vec<RawLog>,
+}
+
+/// 原始日志字段，兼容上游可能存在的字段名差异（level/tag/data 等）
+#[derive(Debug, Deserialize)]
+struct RawLog {
+    timestamp: String,
+    level: String,
+    #[serde(default)]
+    tag: String,
+    message: String,
+    #[serde(default)]
+    data: Option<serde_json::Value>,
+    /// 兼容上游可能用 module 而非 tag
+    #[serde(default)]
+    module: Option<String>,
+}
+
+impl RawLog {
+    fn into_entry(self) -> Result<LogEntry, String> {
+        let level = LogLevel::parse(&self.level)
+            .ok_or_else(|| format!("未知日志级别: {}", self.level))?;
+        // tag 优先，缺失时回退到 module
+        let tag = if !self.tag.is_empty() {
+            self.tag
+        } else {
+            self.module.unwrap_or_else(|| "未知".to_string())
+        };
+        Ok(LogEntry {
+            timestamp: self.timestamp,
+            level,
+            tag,
+            message: self.message,
+            data: self.data,
+        })
+    }
+}
+
+/// 下载 gzip 日志包并解压为日志条目。
+///
+/// - `scf_url`：SCF 函数 URL 根地址
+/// - `report_id`：上报编号
+/// - `api_key`：下载端点鉴权密钥
+/// - `http`：复用的 reqwest 客户端
+/// - `cache_dir`：缓存目录，命中则跳过下载（离线优先）
+///
+/// 返回 `(日志条目, gzip 文件字节数)`
+pub async fn download(
+    scf_url: &str,
+    report_id: &str,
+    api_key: &str,
+    http: &reqwest::Client,
+    cache_dir: &Path,
+) -> Result<(Vec<LogEntry>, u64), String> {
+    // 1. 缓存命中优先（离线分析）
+    let gz_path = cache_dir.join(format!("{report_id}.gz"));
+    if gz_path.exists() {
+        let bytes = std::fs::read(&gz_path)
+            .map_err(|e| format!("读取缓存失败: {e}"))?;
+        let entries = decode_gzip(&bytes)?;
+        return Ok((entries, bytes.len() as u64));
+    }
+
+    // 2. 下载 .gz
+    let url = format!("{}/logs/{}", scf_url.trim_end_matches('/'), report_id);
+    let resp = http
+        .get(&url)
+        .header("X-API-Key", api_key)
+        .send()
+        .await
+        .map_err(|e| format!("下载请求失败: {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("下载失败 {status}: {text}"));
+    }
+
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("读取响应体失败: {e}"))?;
+    let file_size = bytes.len() as u64;
+
+    // 3. 落盘缓存（失败不阻断本次分析）
+    if let Err(e) = std::fs::create_dir_all(cache_dir)
+        .and_then(|_| std::fs::write(&gz_path, &bytes))
+    {
+        log::warn!("缓存写入失败（不影响本次分析）: {e}");
+    }
+
+    // 4. 解压解析
+    let entries = decode_gzip(&bytes)?;
+    Ok((entries, file_size))
+}
+
+/// 解压 gzip 字节并解析为日志条目
+fn decode_gzip(bytes: &[u8]) -> Result<Vec<LogEntry>, String> {
+    let mut decoder = GzDecoder::new(bytes);
+    let mut json_str = String::new();
+    decoder
+        .read_to_string(&mut json_str)
+        .map_err(|e| format!("gzip 解压失败: {e}"))?;
+
+    let payload: LogPayload =
+        serde_json::from_str(&json_str).map_err(|e| format!("JSON 解析失败: {e}"))?;
+
+    payload
+        .logs
+        .into_iter()
+        .map(RawLog::into_entry)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+    use std::io::Write;
+
+    fn gzip_json(json: &str) -> Vec<u8> {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(json.as_bytes()).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    #[test]
+    fn decode_basic_payload() {
+        let json = r#"{"exportedAt":"2026-06-08T10:00:00Z","logs":[
+            {"timestamp":"2026-06-08T14:35:22Z","level":"ERROR","tag":"战斗","message":"灵气溢出","data":{"v":-120}},
+            {"timestamp":"2026-06-08T14:35:21Z","level":"warn","tag":"战斗","message":"灵气异常"}
+        ]}"#;
+        let gz = gzip_json(json);
+        let entries = decode_gzip(&gz).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].level, LogLevel::Error);
+        assert!(entries[0].data.is_some());
+        assert_eq!(entries[1].level, LogLevel::Warn); // 小写级别兼容
+    }
+
+    #[test]
+    fn decode_module_fallback() {
+        // 上游用 module 而非 tag
+        let json = r#"{"logs":[
+            {"timestamp":"t","level":"INFO","module":"修炼","message":"入定"}
+        ]}"#;
+        let gz = gzip_json(json);
+        let entries = decode_gzip(&gz).unwrap();
+        assert_eq!(entries[0].tag, "修炼");
+    }
+
+    #[test]
+    fn decode_invalid_level() {
+        let json = r#"{"logs":[{"timestamp":"t","level":"FATAL","message":"x"}]}"#;
+        let gz = gzip_json(json);
+        assert!(decode_gzip(&gz).is_err());
+    }
+}
