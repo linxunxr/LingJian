@@ -1,12 +1,31 @@
 <script setup lang="ts">
+import { computed, ref } from 'vue'
+import { useVirtualizer } from '@tanstack/vue-virtual'
 import type { LogEntry } from '@/types'
 import { formatTime, levelClass } from '@/utils/format'
 
-defineProps<{
+const props = defineProps<{
   entries: readonly LogEntry[]
 }>()
 
 const selected = defineModel<LogEntry | null>('selected', { default: null })
+
+const ROW_HEIGHT = 32
+
+const parentRef = ref<HTMLElement | null>(null)
+
+const virtualizer = useVirtualizer(
+  computed(() => ({
+    count: props.entries.length,
+    getScrollElement: () => parentRef.value,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 10,
+  })),
+)
+
+// virtualizer 是 Ref<Virtualizer>，响应式获取当前可见项
+const virtualItems = computed(() => virtualizer.value.getVirtualItems())
+const totalHeight = computed(() => virtualizer.value.getTotalSize())
 </script>
 
 <template>
@@ -17,17 +36,41 @@ const selected = defineModel<LogEntry | null>('selected', { default: null })
       <span class="col-tag">模块</span>
       <span class="col-msg">消息</span>
     </div>
-    <div class="log-table__body">
+    <div ref="parentRef" class="log-table__body">
       <div
-        v-for="(entry, idx) in entries"
-        :key="idx"
-        :class="['log-row', levelClass(entry.level), { selected: selected?.timestamp === entry.timestamp && selected?.message === entry.message }]"
-        @click="selected = entry"
+        :style="{
+          height: `${totalHeight}px`,
+          width: '100%',
+          position: 'relative',
+        }"
       >
-        <span class="col-level">{{ entry.level }}</span>
-        <span class="col-time">{{ formatTime(entry.timestamp) }}</span>
-        <span class="col-tag">{{ entry.tag }}</span>
-        <span class="col-msg">{{ entry.message }}</span>
+        <div
+          v-for="virtualRow in virtualItems"
+          :key="virtualRow.index"
+          :class="[
+            'log-row',
+            levelClass(entries[virtualRow.index].level),
+            {
+              selected:
+                selected?.timestamp === entries[virtualRow.index].timestamp &&
+                selected?.message === entries[virtualRow.index].message,
+            },
+          ]"
+          :style="{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            width: '100%',
+            height: `${ROW_HEIGHT}px`,
+            transform: `translateY(${virtualRow.start}px)`,
+          }"
+          @click="selected = entries[virtualRow.index]"
+        >
+          <span class="col-level">{{ entries[virtualRow.index].level }}</span>
+          <span class="col-time">{{ formatTime(entries[virtualRow.index].timestamp) }}</span>
+          <span class="col-tag">{{ entries[virtualRow.index].tag }}</span>
+          <span class="col-msg">{{ entries[virtualRow.index].message }}</span>
+        </div>
       </div>
       <div v-if="entries.length === 0" class="empty">无匹配日志</div>
     </div>
@@ -47,7 +90,8 @@ const selected = defineModel<LogEntry | null>('selected', { default: null })
   display: grid;
   grid-template-columns: 70px 160px 90px 1fr;
   gap: 0.75rem;
-  padding: 0.5rem 0.875rem;
+  padding: 0 0.875rem;
+  align-items: center;
   font-size: 0.8125rem;
 }
 
@@ -57,10 +101,11 @@ const selected = defineModel<LogEntry | null>('selected', { default: null })
   font-weight: 600;
   font-size: 0.75rem;
   border-bottom: 1px solid var(--color-border);
+  height: 32px;
 }
 
 .log-table__body {
-  max-height: 420px;
+  height: 420px;
   overflow-y: auto;
 }
 

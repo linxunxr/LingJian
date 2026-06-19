@@ -7,7 +7,9 @@ import LogFilter from '@/components/LogFilter.vue'
 import LogTable from '@/components/LogTable.vue'
 import LogDetail from '@/components/LogDetail.vue'
 import Timeline from '@/components/Timeline.vue'
+import ErrorAggregates from '@/components/ErrorAggregates.vue'
 import { useAnalysis } from '@/composables/useAnalysis'
+import { exportReport, type ExportFormat } from '@/composables/useExport'
 import { formatBytes } from '@/utils/format'
 import type { AnalysisResult, LogEntry, Report } from '@/types'
 
@@ -20,6 +22,11 @@ const standaloneResult = ref<AnalysisResult | null>(null)
 const standaloneReport = ref<Report | null>(null)
 const loadingStandalone = ref(false)
 const standaloneError = ref<string | null>(null)
+const exportBusy = ref<ExportFormat | null>(null)
+const exportMessage = ref<string | null>(null)
+
+/** 当前 reportId（来自分析流程或单独加载） */
+const currentReportId = computed(() => state.reportId ?? (route.query.id as string | undefined) ?? null)
 
 /** 实际展示的分析结果（来自 useAnalysis 流程 或 单独加载的 report） */
 const result = computed(() => state.result ?? standaloneResult.value)
@@ -58,6 +65,23 @@ function goHome() {
   router.push({ name: 'home' })
 }
 
+async function onExport(format: ExportFormat) {
+  if (!currentReportId.value) return
+  exportBusy.value = format
+  exportMessage.value = null
+  try {
+    const result = await exportReport(currentReportId.value, format)
+    if (result) {
+      exportMessage.value = `已导出到 ${result.path}（${formatBytes(result.bytes)}）`
+    }
+  } catch (e) {
+    exportMessage.value = typeof e === 'string' ? e : String(e)
+  } finally {
+    exportBusy.value = null
+    setTimeout(() => (exportMessage.value = null), 3000)
+  }
+}
+
 onMounted(() => {
   const id = route.query.id as string | undefined
   if (id) {
@@ -76,7 +100,19 @@ onMounted(() => {
       <span v-if="state.download" class="meta">
         {{ state.download.logCount }} 条 · {{ formatBytes(state.download.fileSize) }}
       </span>
+      <div class="export-actions" v-if="currentReportId">
+        <button class="export-btn" :disabled="!!exportBusy" @click="onExport('markdown')">
+          {{ exportBusy === 'markdown' ? '...' : 'MD' }}
+        </button>
+        <button class="export-btn" :disabled="!!exportBusy" @click="onExport('json')">
+          {{ exportBusy === 'json' ? '...' : 'JSON' }}
+        </button>
+        <button class="export-btn" :disabled="!!exportBusy" @click="onExport('csv')">
+          {{ exportBusy === 'csv' ? '...' : 'CSV' }}
+        </button>
+      </div>
     </header>
+    <p v-if="exportMessage" class="export-msg">{{ exportMessage }}</p>
 
     <p v-if="standaloneError" class="error-msg">{{ standaloneError }}</p>
     <p v-else-if="state.error" class="error-msg">{{ state.error }}</p>
@@ -98,6 +134,8 @@ onMounted(() => {
       </section>
 
       <Timeline :points="result.timeline" />
+
+      <ErrorAggregates :aggregates="result.errorAggregates" />
 
       <div class="log-area">
         <div class="log-area__table">
@@ -154,6 +192,42 @@ onMounted(() => {
   color: var(--color-text-muted);
   font-size: 0.75rem;
   font-family: var(--font-mono);
+}
+
+.export-actions {
+  display: flex;
+  gap: 0.375rem;
+}
+
+.export-btn {
+  padding: 0.25rem 0.625rem;
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  transition: all var(--transition-fast);
+}
+
+.export-btn:hover:not(:disabled) {
+  color: var(--color-text);
+  border-color: var(--color-primary);
+}
+
+.export-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.export-msg {
+  padding: 0.5rem 0.75rem;
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
 }
 
 .stats {

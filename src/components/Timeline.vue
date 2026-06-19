@@ -1,27 +1,146 @@
 <script setup lang="ts">
-import type { TimelinePoint } from '@/types'
-import { formatTime, levelClass } from '@/utils/format'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import {
+  Chart,
+  ScatterController,
+  PointElement,
+  LinearScale,
+  TimeScale,
+  Tooltip,
+  Legend,
+  type ChartConfiguration,
+  type ChartData,
+} from 'chart.js'
+import 'chartjs-adapter-date-fns'
+import { zhCN } from 'date-fns/locale'
 
-defineProps<{
+import type { TimelinePoint } from '@/types'
+import { formatTime } from '@/utils/format'
+
+Chart.register(ScatterController, PointElement, LinearScale, TimeScale, Tooltip, Legend)
+
+const props = defineProps<{
   points: readonly TimelinePoint[]
 }>()
+
+const canvasRef = ref<HTMLCanvasElement | null>(null)
+let chart: Chart | null = null
+
+/** Y 轴层级到标签的映射 */
+const Y_LABELS: Record<number, string> = {
+  1: 'ERROR',
+  2: 'WARN',
+}
+
+/** 散点数据，按级别分组为两个 dataset */
+const chartData = computed<ChartData<'scatter'>>(() => {
+  const errorPoints = props.points
+    .filter((p) => p.level === 'ERROR')
+    .map((p) => ({ x: new Date(p.timestamp).getTime(), y: 1, message: p.message }))
+  const warnPoints = props.points
+    .filter((p) => p.level === 'WARN')
+    .map((p) => ({ x: new Date(p.timestamp).getTime(), y: 2, message: p.message }))
+
+  return {
+    datasets: [
+      {
+        label: 'ERROR',
+        data: errorPoints,
+        backgroundColor: '#EF4444',
+        pointRadius: 5,
+        pointHoverRadius: 7,
+      },
+      {
+        label: 'WARN',
+        data: warnPoints,
+        backgroundColor: '#F59E0B',
+        pointRadius: 4,
+        pointHoverRadius: 6,
+      },
+    ],
+  }
+})
+
+function buildConfig(): ChartConfiguration<'scatter'> {
+  return {
+    type: 'scatter',
+    data: chartData.value,
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      plugins: {
+        legend: {
+          labels: { color: '#94A3B8', font: { size: 11 } },
+        },
+        tooltip: {
+          callbacks: {
+            title: (items) => {
+              const raw = items[0]?.raw as { x: number }
+              return formatTime(new Date(raw.x).toISOString())
+            },
+            label: (item) => {
+              const raw = item.raw as { message: string }
+              return raw.message
+            },
+          },
+        },
+      },
+      scales: {
+        x: {
+          type: 'time',
+          time: {
+            tooltipFormat: 'yyyy-MM-dd HH:mm:ss',
+            displayFormats: { minute: 'HH:mm', hour: 'MM-dd HH:mm' },
+          },
+          adapters: { date: { locale: zhCN } },
+          ticks: { color: '#94A3B8', font: { size: 10 } },
+          grid: { color: 'rgba(148, 163, 184, 0.1)' },
+        },
+        y: {
+          min: 0.5,
+          max: 2.5,
+          ticks: {
+            color: '#94A3B8',
+            font: { size: 10 },
+            stepSize: 1,
+            callback: (val) => Y_LABELS[Number(val)] ?? '',
+          },
+          grid: { color: 'rgba(148, 163, 184, 0.1)' },
+        },
+      },
+    },
+  }
+}
+
+function renderChart() {
+  if (!canvasRef.value) return
+  chart?.destroy()
+  chart = new Chart(canvasRef.value, buildConfig())
+}
+
+watch(
+  () => props.points,
+  () => renderChart(),
+  { deep: true },
+)
+
+onMounted(renderChart)
+onUnmounted(() => chart?.destroy())
 </script>
 
 <template>
   <div class="timeline">
-    <div v-if="points.length === 0" class="empty">暂无 WARN/ERROR 日志</div>
-    <ul v-else class="timeline-list">
-      <li
-        v-for="(point, idx) in points"
-        :key="idx"
-        :class="['timeline-item', levelClass(point.level)]"
-      >
-        <span class="dot" />
-        <span class="time">{{ formatTime(point.timestamp) }}</span>
-        <span class="level">{{ point.level }}</span>
-        <span class="msg">{{ point.message }}</span>
-      </li>
-    </ul>
+    <div class="timeline__header">
+      <span class="timeline__title">错误时间线</span>
+      <span v-if="points.length === 0" class="timeline__empty-hint">暂无 WARN/ERROR</span>
+    </div>
+    <div class="timeline__canvas-wrap">
+      <canvas v-show="points.length > 0" ref="canvasRef" />
+      <div v-if="points.length === 0" class="timeline__empty">
+        暂无 WARN/ERROR 日志
+      </div>
+    </div>
   </div>
 </template>
 
@@ -31,74 +150,38 @@ defineProps<{
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   padding: 0.75rem 1rem;
-  max-height: 200px;
-  overflow-y: auto;
 }
 
-.empty {
-  text-align: center;
-  color: var(--color-text-muted);
-  font-size: 0.8125rem;
-  padding: 1rem 0;
-}
-
-.timeline-list {
-  list-style: none;
-}
-
-.timeline-item {
+.timeline__header {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.375rem 0;
-  font-size: 0.8125rem;
-  border-bottom: 1px solid var(--color-border);
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
 }
 
-.timeline-item:last-child {
-  border-bottom: none;
+.timeline__title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-text);
 }
 
-.dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.timeline-item.level-warn .dot {
-  background-color: var(--color-warning);
-}
-.timeline-item.level-error .dot {
-  background-color: var(--color-danger);
-}
-
-.time {
-  font-family: var(--font-mono);
+.timeline__empty-hint {
   font-size: 0.75rem;
   color: var(--color-text-muted);
-  flex-shrink: 0;
 }
 
-.level {
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  font-weight: 600;
-  flex-shrink: 0;
-  width: 48px;
+.timeline__canvas-wrap {
+  position: relative;
+  height: 180px;
 }
 
-.timeline-item.level-warn .level {
-  color: var(--color-warning);
-}
-.timeline-item.level-error .level {
-  color: var(--color-danger);
-}
-
-.msg {
-  color: var(--color-text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.timeline__empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
 }
 </style>
