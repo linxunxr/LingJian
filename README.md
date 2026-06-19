@@ -127,7 +127,8 @@ LingJian/
 │   │   ├── Timeline.vue         # Chart.js 散点图时间线
 │   │   ├── ErrorAggregates.vue  # 错误聚合面板
 │   │   ├── Onboarding.vue       # 首次启动引导
-│   │   └── UpdateCard.vue       # 应用更新卡片
+│   │   ├── UpdateCard.vue       # 应用更新卡片
+│   │   └── DataCard.vue         # 本地数据管理（目录/大小/迁移）
 │   ├── composables/             # 组合式状态管理
 │   │   ├── useSettings.ts       # 凭证读写（keyring + store）
 │   │   ├── useAnalysis.ts       # 分析流程状态机
@@ -148,14 +149,16 @@ LingJian/
 │   │   │   ├── reports.rs       # 最近上报列表
 │   │   │   ├── export_.rs       # 导出（MD/JSON/CSV）
 │   │   │   ├── secret.rs        # 凭证钥匙串读写
-│   │   │   └── settings.rs      # 连接验证
+│   │   │   ├── settings.rs      # 连接验证
+│   │   │   └── storage.rs       # 数据目录管理
 │   │   ├── services/            # 业务逻辑层
 │   │   │   ├── github.rs        # GitHub API 客户端
 │   │   │   ├── downloader.rs    # 下载 + gzip 解压
 │   │   │   ├── cache.rs         # SQLite 缓存
 │   │   │   ├── analyzer.rs      # 统计分析引擎
 │   │   │   ├── exporter.rs      # 报告生成器
-│   │   │   └── secret.rs        # keyring 封装
+│   │   │   ├── secret.rs        # keyring 封装
+│   │   │   └── paths.rs         # 数据目录解析（便携/降级/迁移）
 │   │   └── models/              # 数据模型
 │   ├── migrations/              # SQLite 迁移脚本
 │   ├── capabilities/            # Tauri 权限配置
@@ -193,7 +196,20 @@ LingJian/
 
 ### 数据位置
 
-应用数据存放于系统应用数据目录：
+灵鉴采用**便携优先**策略，避免占用 C 盘：
+
+1. **便携模式（默认）**：数据存放在安装目录下的 `data/` 子目录（如 `D:\LingJian\data\`），跟随安装位置，卸载即清除
+2. **系统模式（降级）**：当安装目录无写权限（如装在 `Program Files`）时，自动降级到系统默认目录
+3. **自定义目录**：可在「设置 → 本地数据」中手动指定任意磁盘位置，数据自动迁移
+
+数据目录内容：
+- `lingjian.db` — SQLite 数据库（上报记录 + 日志条目）
+- `cache/` — gzip 压缩包缓存（离线复用）
+
+> 💡 **建议**：安装时选择非系统盘目录（如 D 盘），数据自动便携存储，无需额外配置。
+> Windows 安装包为 NSIS exe，安装向导支持自定义安装路径。
+
+降级时的系统默认目录：
 
 | 平台 | 路径 |
 |------|------|
@@ -201,9 +217,7 @@ LingJian/
 | macOS | `~/Library/Application Support/com.lingjian.app/` |
 | Linux | `~/.local/share/com.lingjian.app/` |
 
-包含：
-- `lingjian.db` — SQLite 数据库（上报记录 + 日志条目）
-- `cache/` — gzip 压缩包缓存（离线复用）
+> 无论数据目录在哪，系统目录下都会保留一个 `data_dir.txt` 标记文件（记录当前数据目录路径），用于跨重启/升级保持一致。
 
 ## 使用指南
 
