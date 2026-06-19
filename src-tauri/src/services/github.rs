@@ -154,6 +154,37 @@ impl GitHubClient {
             title: issue.title,
         })
     }
+
+    /// 验证 Token 有效性：调用 /user 端点，成功返回用户登录名
+    pub async fn verify_token(&self) -> Result<String, String> {
+        let resp = self
+            .client
+            .get("https://api.github.com/user")
+            .header(AUTHORIZATION, format!("Bearer {}", self.token))
+            .header(USER_AGENT, "LingJian/0.1")
+            .send()
+            .await
+            .map_err(|e| format!("GitHub 请求失败: {e}"))?;
+
+        let status = resp.status();
+        if status.as_u16() == 401 {
+            return Err("Token 无效或已过期".to_string());
+        }
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("GitHub 返回 {status}: {text}"));
+        }
+
+        #[derive(serde::Deserialize)]
+        struct User {
+            login: String,
+        }
+        let user: User = resp
+            .json()
+            .await
+            .map_err(|e| format!("解析用户信息失败: {e}"))?;
+        Ok(user.login)
+    }
 }
 
 #[cfg(test)]

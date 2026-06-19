@@ -107,6 +107,41 @@ pub async fn download(
     Ok((entries, file_size))
 }
 
+/// 测试 SCF 下载端点连通性。
+///
+/// 用一个不存在的 reportId 发请求，预期返回 401（鉴权通过但资源不存在）
+/// 或 404（资源不存在），二者都证明端点可达且鉴权配置正确。
+/// 返回 401 且是鉴权失败则说明 API Key 错误。
+pub async fn test_endpoint(
+    scf_url: &str,
+    api_key: &str,
+    http: &reqwest::Client,
+) -> Result<(), String> {
+    // 用一个符合 UUID 格式但不存在的 id 测试
+    let probe = "00000000-0000-0000-0000-000000000000";
+    let url = format!("{}/logs/{}", scf_url.trim_end_matches('/'), probe);
+
+    let resp = http
+        .get(&url)
+        .header("X-API-Key", api_key)
+        .send()
+        .await
+        .map_err(|e| format!("连接失败: {e}"))?;
+
+    let status = resp.status().as_u16();
+    match status {
+        // 资源不存在 = 端点可达 + 鉴权通过
+        404 => Ok(()),
+        // 端点可达，但需区分鉴权失败
+        401 => Err("API Key 无效".to_string()),
+        // 某些实现可能用 403 表示鉴权失败
+        403 => Err("API Key 无效或无权限".to_string()),
+        // 意外命中真实数据（极低概率）也算通过
+        200 => Ok(()),
+        other => Err(format!("端点返回异常状态: {other}")),
+    }
+}
+
 /// 解压 gzip 字节并解析为日志条目
 fn decode_gzip(bytes: &[u8]) -> Result<Vec<LogEntry>, String> {
     let mut decoder = GzDecoder::new(bytes);

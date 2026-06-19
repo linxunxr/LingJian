@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
 import { useSettings, saveSettings } from '@/composables/useSettings'
 
 const { settings, loadSettings } = useSettings()
@@ -7,6 +8,14 @@ const { settings, loadSettings } = useSettings()
 const saving = ref(false)
 const saved = ref(false)
 const error = ref<string | null>(null)
+
+// GitHub 验证状态
+const verifyingGithub = ref(false)
+const githubResult = ref<{ ok: boolean; msg: string } | null>(null)
+
+// SCF 验证状态
+const verifyingScf = ref(false)
+const scfResult = ref<{ ok: boolean; msg: string } | null>(null)
 
 async function onSave() {
   saving.value = true
@@ -23,12 +32,46 @@ async function onSave() {
   }
 }
 
+async function verifyGithub() {
+  verifyingGithub.value = true
+  githubResult.value = null
+  try {
+    const login = await invoke<string>('verify_github_token', {
+      githubToken: settings.githubToken,
+    })
+    githubResult.value = { ok: true, msg: `验证通过，账号: ${login}` }
+  } catch (e) {
+    githubResult.value = { ok: false, msg: typeof e === 'string' ? e : String(e) }
+  } finally {
+    verifyingGithub.value = false
+  }
+}
+
+async function verifyScf() {
+  verifyingScf.value = true
+  scfResult.value = null
+  try {
+    await invoke('test_scf_endpoint', {
+      scfUrl: settings.scfUrl,
+      apiKey: settings.apiKey,
+    })
+    scfResult.value = { ok: true, msg: '端点连通，鉴权配置正确' }
+  } catch (e) {
+    scfResult.value = { ok: false, msg: typeof e === 'string' ? e : String(e) }
+  } finally {
+    verifyingScf.value = false
+  }
+}
+
 onMounted(loadSettings)
 </script>
 
 <template>
   <div class="settings">
     <h2 class="settings-title">设置</h2>
+    <p class="settings-hint">
+      Token 和 API Key 加密存储于系统钥匙串，SCF URL 存于本地配置文件
+    </p>
 
     <section class="card">
       <h3 class="card-title">GitHub 配置</h3>
@@ -36,6 +79,14 @@ onMounted(loadSettings)
         <label class="field-label">Token</label>
         <input v-model="settings.githubToken" type="password" class="field-input" placeholder="ghp_..." />
         <p class="field-hint">用于通过 GitHub API 获取 Issue 并解析 reportId（仅需 issues: read 权限）</p>
+      </div>
+      <div class="verify-row">
+        <button class="verify-btn" :disabled="verifyingGithub" @click="verifyGithub">
+          {{ verifyingGithub ? '验证中...' : '验证连接' }}
+        </button>
+        <span v-if="githubResult" :class="['verify-result', githubResult.ok ? 'ok' : 'fail']">
+          {{ githubResult.ok ? '✓' : '✗' }} {{ githubResult.msg }}
+        </span>
       </div>
     </section>
 
@@ -48,6 +99,14 @@ onMounted(loadSettings)
       <div class="field">
         <label class="field-label">API Key</label>
         <input v-model="settings.apiKey" type="password" class="field-input" placeholder="下载端点鉴权密钥" />
+      </div>
+      <div class="verify-row">
+        <button class="verify-btn" :disabled="verifyingScf" @click="verifyScf">
+          {{ verifyingScf ? '测试中...' : '测试下载' }}
+        </button>
+        <span v-if="scfResult" :class="['verify-result', scfResult.ok ? 'ok' : 'fail']">
+          {{ scfResult.ok ? '✓' : '✗' }} {{ scfResult.msg }}
+        </span>
       </div>
     </section>
 
@@ -77,6 +136,12 @@ onMounted(loadSettings)
   font-size: 1.125rem;
   font-weight: 700;
   color: var(--color-text-bright);
+  margin-bottom: 0.25rem;
+}
+
+.settings-hint {
+  font-size: 0.7rem;
+  color: var(--color-text-muted);
   margin-bottom: 1.25rem;
 }
 
@@ -130,6 +195,45 @@ onMounted(loadSettings)
   margin-top: 0.25rem;
   font-size: 0.7rem;
   color: var(--color-text-muted);
+}
+
+.verify-row {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin-top: 0.625rem;
+}
+
+.verify-btn {
+  padding: 0.375rem 0.875rem;
+  background-color: var(--color-surface-alt);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.verify-btn:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.verify-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.verify-result {
+  font-size: 0.75rem;
+}
+
+.verify-result.ok {
+  color: var(--color-success);
+}
+
+.verify-result.fail {
+  color: var(--color-danger);
 }
 
 .actions {

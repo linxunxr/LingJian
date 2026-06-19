@@ -1,13 +1,56 @@
 <script setup lang="ts">
-import { RouterView, RouterLink, useRoute } from 'vue-router'
+import { onMounted, onUnmounted, ref } from 'vue'
+import { RouterView, RouterLink, useRoute, useRouter } from 'vue-router'
+import { LazyStore } from '@tauri-apps/plugin-store'
+import Onboarding from '@/components/Onboarding.vue'
+import { loadSettings, isSettingsComplete } from '@/composables/useSettings'
 
 const route = useRoute()
+const router = useRouter()
+const showOnboarding = ref(false)
 
 const navItems = [
   { to: '/', name: 'home', label: '首页' },
   { to: '/analyze', name: 'analyze', label: '分析' },
   { to: '/settings', name: 'settings', label: '设置' },
 ]
+
+const onboardStore = new LazyStore('settings.json')
+
+function onKeyDown(e: KeyboardEvent) {
+  // Ctrl+F / Cmd+F：聚焦搜索框（分析页关键词 / 首页 Issue 输入）
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+    const el = document.querySelector<HTMLElement>('[data-shortcut="search"]')
+    if (el) {
+      e.preventDefault()
+      el.focus()
+    }
+  }
+  // Esc：在分析页返回首页
+  if (e.key === 'Escape' && route.name === 'analyze') {
+    router.push({ name: 'home' })
+  }
+}
+
+onMounted(async () => {
+  window.addEventListener('keydown', onKeyDown)
+  await loadSettings()
+  // 首次启动：未标记完成且配置不完整时弹出引导
+  const onboarded = (await onboardStore.get<boolean>('onboarded')) ?? false
+  if (!onboarded && !isSettingsComplete()) {
+    showOnboarding.value = true
+  }
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', onKeyDown)
+})
+
+async function closeOnboarding() {
+  await onboardStore.set('onboarded', true)
+  await onboardStore.save()
+  showOnboarding.value = false
+}
 </script>
 
 <template>
@@ -31,6 +74,7 @@ const navItems = [
     <main class="app-main">
       <RouterView />
     </main>
+    <Onboarding v-if="showOnboarding" @done="closeOnboarding" @skip="closeOnboarding" />
   </div>
 </template>
 
