@@ -126,11 +126,13 @@ LingJian/
 │   │   ├── LogDetail.vue        # 单条日志详情 + JSON 数据
 │   │   ├── Timeline.vue         # Chart.js 散点图时间线
 │   │   ├── ErrorAggregates.vue  # 错误聚合面板
-│   │   └── Onboarding.vue       # 首次启动引导
+│   │   ├── Onboarding.vue       # 首次启动引导
+│   │   └── UpdateCard.vue       # 应用更新卡片
 │   ├── composables/             # 组合式状态管理
 │   │   ├── useSettings.ts       # 凭证读写（keyring + store）
 │   │   ├── useAnalysis.ts       # 分析流程状态机
-│   │   └── useExport.ts         # 导出流程封装
+│   │   ├── useExport.ts         # 导出流程封装
+│   │   └── useUpdater.ts        # 自动更新状态机
 │   ├── types/                   # TypeScript 类型定义
 │   ├── utils/                   # 工具函数（格式化等）
 │   └── styles/                  # 全局样式与主题
@@ -159,6 +161,10 @@ LingJian/
 │   ├── capabilities/            # Tauri 权限配置
 │   ├── icons/                   # 应用图标
 │   └── tauri.conf.json          # Tauri 构建配置
+│
+├── .github/
+│   └── workflows/
+│       └── release.yml          # GitHub Actions 发布工作流（多平台构建 + 签名）
 │
 └── docs/                        # 设计文档
     ├── 灵鉴日志分析工具设计方案.md
@@ -219,6 +225,16 @@ LingJian/
 | **日志浏览** | 虚拟滚动表格（支持 500+ 条流畅渲染），点击行查看详情 |
 | **导出** | 导航栏 MD / JSON / CSV 按钮，选择保存路径 |
 
+### 自动更新
+
+灵鉴内置自动更新机制，基于 Tauri Updater + GitHub Releases：
+
+- **启动时**自动静默检查更新，若有新版本，导航栏右侧出现绿色「新版本」闪烁提示
+- 点击提示或进入「设置」页底部「应用更新」卡片，可查看新版本号、发布日期和更新说明
+- 点击「下载并安装」自动下载签名验证后的安装包，完成后自动重启
+
+更新流程包含 Ed25519 签名验证，确保安装包未被篡改。
+
 ### 键盘快捷键
 
 | 快捷键 | 功能 |
@@ -273,6 +289,50 @@ cargo test --lib
 
 - Rust 遵循 snake_case，通过 `#[serde(rename_all = "camelCase")]` 与前端 camelCase 对齐
 - 前端类型定义集中在 `src/types/index.ts`，与 Rust models 保持字段一致
+
+## 发布流程
+
+应用通过 GitHub Actions 自动构建发布，触发条件为推送 `v*` 格式的 tag。
+
+### 前置配置（仅首次）
+
+在 GitHub 仓库 Settings → Secrets and variables → Actions 中添加两个 Secret（值见 `.env.example` 说明）：
+
+| Secret 名称 | 说明 |
+|-------------|------|
+| `TAURI_SIGNING_PRIVATE_KEY` | Ed25519 私钥（base64 长字符串）|
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | 私钥密码 |
+
+> ⚠️ 私钥由 `npx tauri signer generate` 生成，**切勿提交到仓库或泄露**。丢失私钥将无法发布可更新的版本。
+
+### 发布新版本
+
+```bash
+# 1. 更新版本号（package.json 与 src-tauri/tauri.conf.json 的 version 字段需一致）
+# 2. 提交变更
+git add -A
+git commit -m "chore: bump version to v0.2.0"
+
+# 3. 打 tag 并推送
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+推送 tag 后，GitHub Actions 会自动：
+1. 在 Windows / macOS (x86_64 + aarch64) / Linux 四个平台并行构建
+2. 用私钥对安装包签名
+3. 创建 GitHub Release，附带各平台安装包 + `latest.json`（更新清单）
+4. 已安装旧版本的应用下次启动时自动检测到更新
+
+构建产物：
+
+| 平台 | 安装包 |
+|------|--------|
+| Windows | `.msi` / `.exe` (NSIS) |
+| macOS | `.dmg` (Intel + Apple Silicon) |
+| Linux | `.deb` / `.rpm` / `.AppImage` |
+
+> 💡 本地构建签名版本（测试用）：设置环境变量 `TAURI_SIGNING_PRIVATE_KEY` 和 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 后执行 `npm run tauri build`。
 
 ## 相关文档
 
