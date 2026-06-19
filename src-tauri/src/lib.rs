@@ -9,7 +9,7 @@ use tauri::Manager;
 
 use services::cache::Cache;
 
-use commands::{analyze, download, issue, reports};
+use commands::{analyze, download, export_, issue, reports};
 
 /// 全局共享的应用状态
 pub struct AppState {
@@ -61,6 +61,7 @@ pub fn run() {
             download::download_log,
             analyze::analyze_log,
             reports::list_recent_reports,
+            export_::export_report,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
