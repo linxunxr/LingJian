@@ -1,5 +1,6 @@
 import { reactive } from 'vue'
 import { LazyStore } from '@tauri-apps/plugin-store'
+import { invoke } from '@tauri-apps/api/core'
 
 export interface AppSettings {
   githubToken: string
@@ -8,7 +9,6 @@ export interface AppSettings {
 }
 
 const STORE_FILE = 'settings.json'
-
 const store = new LazyStore(STORE_FILE)
 
 /** 全局共享的设置状态（模块级单例） */
@@ -18,24 +18,32 @@ export const settings = reactive<AppSettings>({
   apiKey: '',
 })
 
-/** 标记是否已从磁盘加载 */
-let loaded = false
-
-/** 从持久化存储加载设置到内存 */
+/**
+ * 从持久化存储加载设置到内存（每次调用都刷新，确保读到最新值）。
+ * - SCF URL：明文，存 tauri-plugin-store
+ * - GitHub Token / SCF API Key：敏感，存系统钥匙串（keyring）
+ */
 export async function loadSettings(): Promise<void> {
-  if (loaded) return
-  settings.githubToken = (await store.get<string>('githubToken')) ?? ''
-  settings.scfUrl = (await store.get<string>('scfUrl')) ?? ''
-  settings.apiKey = (await store.get<string>('apiKey')) ?? ''
-  loaded = true
+  try {
+    // SCF URL 走 store
+    settings.scfUrl = (await store.get<string>('scfUrl')) ?? ''
+    // 敏感凭证走 keyring
+    settings.githubToken = await invoke<string>('get_secret', { kind: 'githubToken' })
+    settings.apiKey = await invoke<string>('get_secret', { kind: 'scfApiKey' })
+  } catch (e) {
+    // keyring 不可用时降级为空，不阻断启动
+    console.warn('加载凭证失败:', e)
+  }
 }
 
-/** 将当前内存设置持久化到磁盘 */
+/** 将当前内存设置持久化 */
 export async function saveSettings(): Promise<void> {
-  await store.set('githubToken', settings.githubToken)
+  // SCF URL 走 store
   await store.set('scfUrl', settings.scfUrl)
-  await store.set('apiKey', settings.apiKey)
   await store.save()
+  // 敏感凭证走 keyring
+  await invoke('set_secret', { kind: 'githubToken', value: settings.githubToken })
+  await invoke('set_secret', { kind: 'scfApiKey', value: settings.apiKey })
 }
 
 /** 设置是否完整（用于判断能否发起分析） */

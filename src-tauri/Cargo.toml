@@ -24,3 +24,4 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 regex = "1"
 log = "0.4"
 chrono = "0.4"
+keyring = "3"
