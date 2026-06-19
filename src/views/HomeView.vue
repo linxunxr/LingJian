@@ -1,20 +1,47 @@
 <script setup lang="ts">
+import { onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { invoke } from '@tauri-apps/api/core'
-import { ref } from 'vue'
 
-const message = ref('')
-const loading = ref(false)
+import IssueInput from '@/components/IssueInput.vue'
+import { useAnalysis } from '@/composables/useAnalysis'
+import { useSettings, isSettingsComplete } from '@/composables/useSettings'
+import { formatTime } from '@/utils/format'
+import type { Report } from '@/types'
 
-async function testConnection() {
-  loading.value = true
+const router = useRouter()
+const { runAnalysis, state } = useAnalysis()
+const { loadSettings } = useSettings()
+
+const recentReports = ref<Report[]>([])
+const settingsReady = ref(false)
+
+const stageText: Record<string, string> = {
+  parsing: '正在解析 Issue...',
+  downloading: '正在下载日志...',
+  analyzing: '正在分析日志...',
+}
+
+async function loadRecent() {
   try {
-    message.value = await invoke('greet', { name: 'LingJian' })
-  } catch (e) {
-    message.value = `Error: ${e}`
-  } finally {
-    loading.value = false
+    recentReports.value = await invoke<Report[]>('list_recent_reports', { limit: 10 })
+  } catch {
+    recentReports.value = []
   }
 }
+
+async function onSubmit(input: string) {
+  await runAnalysis(input)
+  if (state.reportId) {
+    router.push({ name: 'analyze', query: { id: state.reportId } })
+  }
+}
+
+onMounted(async () => {
+  await loadSettings()
+  settingsReady.value = isSettingsComplete()
+  await loadRecent()
+})
 </script>
 
 <template>
@@ -24,34 +51,60 @@ async function testConnection() {
       <p class="hero-desc">Path of Idle Immortals 日志分析工具</p>
     </section>
 
-    <section class="actions">
-      <button class="btn btn-primary" @click="testConnection" :disabled="loading">
-        {{ loading ? '连接中...' : '测试后端连接' }}
-      </button>
-      <p v-if="message" class="response">{{ message }}</p>
+    <section class="search">
+      <IssueInput :loading="state.stage !== 'idle' && state.stage !== 'done'" @submit="onSubmit" />
+      <p v-if="state.error" class="error-msg">{{ state.error }}</p>
+      <p v-else-if="state.stage !== 'idle' && state.stage !== 'done'" class="stage-msg">
+        {{ stageText[state.stage] }}
+      </p>
+      <p v-if="!settingsReady" class="warn-msg">
+        ⚠ 检测到配置不完整，请先到
+        <RouterLink :to="{ name: 'settings' }">设置页</RouterLink>
+        填写 GitHub Token 和 SCF 下载端点
+      </p>
+    </section>
+
+    <section class="recent">
+      <h3 class="section-title">最近分析</h3>
+      <div v-if="recentReports.length === 0" class="empty">暂无分析记录</div>
+      <ul v-else class="report-list">
+        <li
+          v-for="report in recentReports"
+          :key="report.reportId"
+          class="report-item"
+          @click="router.push({ name: 'analyze', query: { id: report.reportId } })"
+        >
+          <span class="report-issue">
+            {{ report.issueNumber ? `#${report.issueNumber}` : '—' }}
+          </span>
+          <span class="report-title">{{ report.issueTitle ?? report.reportId.slice(0, 8) }}</span>
+          <span class="report-count">{{ report.logCount }} 条</span>
+          <span class="report-time">{{ formatTime(report.downloadedAt) }}</span>
+        </li>
+      </ul>
     </section>
   </div>
 </template>
 
 <style scoped>
 .home {
-  max-width: 640px;
+  max-width: 760px;
   margin: 0 auto;
 }
 
 .hero {
   text-align: center;
-  padding: 3rem 0 2rem;
+  padding: 2.5rem 0 2rem;
 }
 
 .hero-title {
-  font-size: 2rem;
+  font-size: 1.75rem;
   font-weight: 700;
   color: var(--color-text-bright);
 }
 
 .version {
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
   font-weight: 400;
   color: var(--color-text-muted);
   vertical-align: super;
@@ -60,46 +113,103 @@ async function testConnection() {
 .hero-desc {
   margin-top: 0.5rem;
   color: var(--color-text-muted);
-  font-size: 0.9rem;
-}
-
-.actions {
-  text-align: center;
-  margin-top: 2rem;
-}
-
-.btn {
-  padding: 0.5rem 1.25rem;
-  border: none;
-  border-radius: var(--radius-md);
   font-size: 0.875rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all var(--transition-fast);
 }
 
-.btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+.search {
+  margin-bottom: 2.5rem;
 }
 
-.btn-primary {
-  background-color: var(--color-primary);
-  color: #fff;
+.error-msg {
+  margin-top: 0.75rem;
+  padding: 0.625rem 0.875rem;
+  background-color: rgba(239, 68, 68, 0.1);
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-md);
+  color: var(--color-danger);
+  font-size: 0.8125rem;
 }
 
-.btn-primary:hover:not(:disabled) {
-  background-color: var(--color-primary-hover);
+.stage-msg {
+  margin-top: 0.75rem;
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
 }
 
-.response {
-  margin-top: 1rem;
-  padding: 0.75rem 1rem;
+.warn-msg {
+  margin-top: 0.75rem;
+  padding: 0.625rem 0.875rem;
+  background-color: rgba(245, 158, 11, 0.1);
+  border: 1px solid var(--color-warning);
+  border-radius: var(--radius-md);
+  color: var(--color-warning);
+  font-size: 0.8125rem;
+}
+
+.section-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--color-text);
+  margin-bottom: 0.75rem;
+}
+
+.empty {
+  padding: 2rem 0;
+  text-align: center;
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+}
+
+.report-list {
+  list-style: none;
   background-color: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.report-item {
+  display: grid;
+  grid-template-columns: 60px 1fr 80px 160px;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  font-size: 0.8125rem;
+  cursor: pointer;
+  transition: background-color var(--transition-fast);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.report-item:last-child {
+  border-bottom: none;
+}
+
+.report-item:hover {
+  background-color: var(--color-surface-alt);
+}
+
+.report-issue {
+  color: var(--color-primary);
+  font-weight: 600;
   font-family: var(--font-mono);
-  font-size: 0.85rem;
-  color: var(--color-success);
+}
+
+.report-title {
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report-count {
+  color: var(--color-text-muted);
+  text-align: right;
+}
+
+.report-time {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  text-align: right;
 }
 </style>
