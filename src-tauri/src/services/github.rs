@@ -37,6 +37,40 @@ pub struct IssueInfo {
     pub realm: Option<String>,
 }
 
+/// Issue 列表项（SCF `/issues` 端点返回）
+///
+/// 与 `IssueInfo` 的区别：列表项额外携带 `state` / `issue_url` / `created_at`，
+/// 用于首页列表展示状态与时间。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueListItem {
+    pub number: u32,
+    pub report_id: String,
+    pub title: String,
+    /// Issue 状态：open / closed
+    pub state: String,
+    pub issue_url: String,
+    /// 创建时间（ISO 8601）
+    pub created_at: String,
+    pub owner: String,
+    pub repo: String,
+    #[serde(default)]
+    pub app_version: Option<String>,
+    #[serde(default)]
+    pub platform: Option<String>,
+    #[serde(default)]
+    pub realm: Option<String>,
+}
+
+/// SCF `/issues` 端点的完整响应
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueList {
+    pub issues: Vec<IssueListItem>,
+    pub page: u32,
+    pub has_more: bool,
+}
+
 /// Issue URL 正则：https://github.com/{owner}/{repo}/issues/{number}
 fn issue_url_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();

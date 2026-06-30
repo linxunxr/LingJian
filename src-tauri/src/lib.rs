@@ -69,6 +69,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             issue::parse_issue_url,
             issue::fetch_issue_info,
+            issue::list_issues,
             issue::is_report_id_input,
             download::download_log,
             analyze::analyze_log,
