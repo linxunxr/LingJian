@@ -7,15 +7,35 @@ use crate::models::log_entry::{LogEntry, LogLevel};
 use crate::services::github::{IssueInfo, IssueList};
 
 /// SCF 下载端点返回的 gzip 包解压后的 JSON 结构
+///
+/// 兼容两种顶层格式：
+///   - 包裹对象 `{ "exportedAt": "...", "logs": [...] }`（推荐）
+///   - 裸数组 `[...]`（部分上游直接 stringify 数组，无包裹）
 #[derive(Debug, Deserialize)]
-struct LogPayload {
-    #[serde(default)]
-    #[allow(dead_code)]
-    exported_at: Option<String>,
-    logs: Vec<RawLog>,
+#[serde(untagged)]
+enum LogPayload {
+    Wrapped {
+        #[serde(default)]
+        #[allow(dead_code)]
+        exported_at: Option<String>,
+        logs: Vec<RawLog>,
+    },
+    Bare(Vec<RawLog>),
 }
 
-/// 原始日志字段，兼容上游可能存在的字段名差异（level/tag/data 等）
+impl LogPayload {
+    fn into_logs(self) -> Vec<RawLog> {
+        match self {
+            LogPayload::Wrapped { logs, .. } => logs,
+            LogPayload::Bare(v) => v,
+        }
+    }
+}
+
+/// 原始日志字段，兼容上游可能存在的字段名差异
+///
+/// tag 解析优先级：`tag` > `category` > `module` > "未知"
+/// （不同上游分别用 tag / category / module 表示模块/功能标签）
 #[derive(Debug, Deserialize)]
 struct RawLog {
     timestamp: String,
@@ -28,15 +48,20 @@ struct RawLog {
     /// 兼容上游可能用 module 而非 tag
     #[serde(default)]
     module: Option<String>,
+    /// 兼容上游可能用 category 而非 tag
+    #[serde(default)]
+    category: Option<String>,
 }
 
 impl RawLog {
     fn into_entry(self) -> Result<LogEntry, String> {
         let level = LogLevel::parse(&self.level)
             .ok_or_else(|| format!("未知日志级别: {}", self.level))?;
-        // tag 优先，缺失时回退到 module
+        // tag 优先级：tag > category > module > "未知"
         let tag = if !self.tag.is_empty() {
             self.tag
+        } else if let Some(c) = self.category {
+            c
         } else {
             self.module.unwrap_or_else(|| "未知".to_string())
         };
@@ -238,6 +263,10 @@ pub async fn test_endpoint(
 }
 
 /// 解压 gzip 字节并解析为日志条目
+///
+/// 宽容兼容多种上游格式：
+///   - 顶层：包裹对象 `{logs:[...]}` 或裸数组 `[...]`
+///   - 字段：tag / category / module 均可作为模块标签
 fn decode_gzip(bytes: &[u8]) -> Result<Vec<LogEntry>, String> {
     let mut decoder = GzDecoder::new(bytes);
     let mut json_str = String::new();
@@ -249,7 +278,7 @@ fn decode_gzip(bytes: &[u8]) -> Result<Vec<LogEntry>, String> {
         serde_json::from_str(&json_str).map_err(|e| format!("JSON 解析失败: {e}"))?;
 
     payload
-        .logs
+        .into_logs()
         .into_iter()
         .map(RawLog::into_entry)
         .collect()
@@ -298,5 +327,51 @@ mod tests {
         let json = r#"{"logs":[{"timestamp":"t","level":"FATAL","message":"x"}]}"#;
         let gz = gzip_json(json);
         assert!(decode_gzip(&gz).is_err());
+    }
+
+    #[test]
+    fn decode_bare_array() {
+        // 上游直接 stringify 数组，无 {logs: [...]} 包裹（SCF test-report.js 格式）
+        let json = r#"[
+            {"timestamp":"t1","level":"info","category":"系统","message":"游戏启动"},
+            {"timestamp":"t2","level":"error","category":"网络","message":"请求超时"}
+        ]"#;
+        let gz = gzip_json(json);
+        let entries = decode_gzip(&gz).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].tag, "系统"); // category 回退为 tag
+        assert_eq!(entries[0].level, LogLevel::Info);
+        assert_eq!(entries[1].tag, "网络");
+        assert_eq!(entries[1].level, LogLevel::Error);
+    }
+
+    #[test]
+    fn decode_category_fallback() {
+        // 包裹格式但用 category 而非 tag
+        let json = r#"{"logs":[
+            {"timestamp":"t","level":"WARN","category":"资源","message":"加载缓慢"}
+        ]}"#;
+        let gz = gzip_json(json);
+        let entries = decode_gzip(&gz).unwrap();
+        assert_eq!(entries[0].tag, "资源");
+    }
+
+    #[test]
+    fn decode_tag_priority() {
+        // tag > category > module：同时存在时 tag 优先
+        let json = r#"{"logs":[
+            {"timestamp":"t","level":"INFO","tag":"TAG","category":"CAT","module":"MOD","message":"m"}
+        ]}"#;
+        let gz = gzip_json(json);
+        let entries = decode_gzip(&gz).unwrap();
+        assert_eq!(entries[0].tag, "TAG");
+    }
+
+    #[test]
+    fn decode_empty_logs() {
+        // 空数组（合法但无日志）
+        let gz = gzip_json("[]");
+        let entries = decode_gzip(&gz).unwrap();
+        assert!(entries.is_empty());
     }
 }
