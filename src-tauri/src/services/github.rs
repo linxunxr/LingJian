@@ -1,9 +1,8 @@
 use regex::Regex;
-use reqwest::header::{AUTHORIZATION, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
-/// 默认仓库（仅给纯编号输入兜底用）
+/// 默认仓库（仅给纯编号输入兜底用，仅用于解析 Issue 编号）
 const DEFAULT_OWNER: &str = "linxunxr";
 const DEFAULT_REPO: &str = "PathofIdleImmortals-bugs";
 
@@ -17,6 +16,9 @@ pub struct ParsedIssue {
 }
 
 /// Issue 完整信息
+///
+/// 注意：owner/repo/title 由 SCF `/issue/:number` 端点返回；
+/// `report_id` 是后续下载日志的关键字段。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IssueInfo {
@@ -26,15 +28,13 @@ pub struct IssueInfo {
     /// 从 Issue body 解析出的上报编号
     pub report_id: String,
     pub title: String,
-}
-
-/// REPORT_ID 提取正则：匹配 Issue body 中注入的 HTML 注释
-/// 形如 `<!-- REPORT_ID: 550e8400-e29b-41d4-a716-446655440000 -->`
-fn report_id_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"<!--\s*REPORT_ID:\s*([0-9a-fA-F-]{36})\s*-->").unwrap()
-    })
+    /// 上报环境信息（增强项，由 SCF 从 Issue body 环境表格提取，可选）
+    #[serde(default)]
+    pub app_version: Option<String>,
+    #[serde(default)]
+    pub platform: Option<String>,
+    #[serde(default)]
+    pub realm: Option<String>,
 }
 
 /// Issue URL 正则：https://github.com/{owner}/{repo}/issues/{number}
@@ -88,105 +88,6 @@ pub fn is_report_id(input: &str) -> bool {
     uuid_re().is_match(input.trim())
 }
 
-/// 从 Issue body 中提取 reportId
-pub fn extract_report_id(body: &str) -> Option<String> {
-    report_id_re()
-        .captures(body)
-        .map(|c| c[1].to_lowercase())
-}
-
-/// GitHub API 返回的 Issue JSON 子集
-#[derive(Debug, Deserialize)]
-struct GithubIssue {
-    title: String,
-    body: Option<String>,
-}
-
-/// GitHub API 交互客户端
-pub struct GitHubClient {
-    client: reqwest::Client,
-    token: String,
-}
-
-impl GitHubClient {
-    pub fn new(client: reqwest::Client, token: String) -> Self {
-        Self { client, token }
-    }
-
-    /// 获取 Issue 并解析出 reportId
-    pub async fn fetch_issue(
-        &self,
-        owner: &str,
-        repo: &str,
-        number: u32,
-    ) -> Result<IssueInfo, String> {
-        let url = format!("https://api.github.com/repos/{owner}/{repo}/issues/{number}");
-
-        let resp = self
-            .client
-            .get(&url)
-            .header(AUTHORIZATION, format!("Bearer {}", self.token))
-            .header(USER_AGENT, "LingJian/0.1")
-            .send()
-            .await
-            .map_err(|e| format!("GitHub 请求失败: {e}"))?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("GitHub 返回 {status}: {text}"));
-        }
-
-        let issue: GithubIssue = resp
-            .json()
-            .await
-            .map_err(|e| format!("解析 GitHub 响应失败: {e}"))?;
-
-        let body = issue.body.unwrap_or_default();
-        let report_id = extract_report_id(&body)
-            .ok_or_else(|| "Issue body 中未找到 REPORT_ID".to_string())?;
-
-        Ok(IssueInfo {
-            owner: owner.to_string(),
-            repo: repo.to_string(),
-            number,
-            report_id,
-            title: issue.title,
-        })
-    }
-
-    /// 验证 Token 有效性：调用 /user 端点，成功返回用户登录名
-    pub async fn verify_token(&self) -> Result<String, String> {
-        let resp = self
-            .client
-            .get("https://api.github.com/user")
-            .header(AUTHORIZATION, format!("Bearer {}", self.token))
-            .header(USER_AGENT, "LingJian/0.1")
-            .send()
-            .await
-            .map_err(|e| format!("GitHub 请求失败: {e}"))?;
-
-        let status = resp.status();
-        if status.as_u16() == 401 {
-            return Err("Token 无效或已过期".to_string());
-        }
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("GitHub 返回 {status}: {text}"));
-        }
-
-        #[derive(serde::Deserialize)]
-        struct User {
-            login: String,
-        }
-        let user: User = resp
-            .json()
-            .await
-            .map_err(|e| format!("解析用户信息失败: {e}"))?;
-        Ok(user.login)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,20 +119,6 @@ mod tests {
     #[test]
     fn parse_invalid() {
         assert!(parse_issue_input("not an issue").is_err());
-    }
-
-    #[test]
-    fn extract_id_from_body() {
-        let body = "## 反馈\n<!-- REPORT_ID: 550E8400-e29b-41d4-a716-446655440000 -->\n正文";
-        assert_eq!(
-            extract_report_id(body),
-            Some("550e8400-e29b-41d4-a716-446655440000".to_string())
-        );
-    }
-
-    #[test]
-    fn extract_id_missing() {
-        assert!(extract_report_id("没有注释的正文").is_none());
     }
 
     #[test]

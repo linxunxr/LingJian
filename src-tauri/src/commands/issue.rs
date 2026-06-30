@@ -1,7 +1,7 @@
 use serde::Serialize;
 use tauri::State;
 
-use crate::services::github::{self, GitHubClient};
+use crate::services::{downloader, github};
 
 /// URL/编号解析结果
 #[derive(Debug, Serialize)]
@@ -23,20 +23,18 @@ pub fn parse_issue_url(url: String) -> Result<ParseResult, String> {
     })
 }
 
-/// 通过 GitHub API 获取 Issue 信息并解析 reportId
+/// 通过 SCF 端点获取 Issue 信息（服务端代理解析 reportId，无需 GitHub Token）
 #[tauri::command]
 pub async fn fetch_issue_info(
-    owner: String,
-    repo: String,
     number: u32,
-    github_token: String,
+    scf_url: String,
+    api_key: String,
     http: State<'_, crate::AppState>,
 ) -> Result<crate::services::github::IssueInfo, String> {
-    if github_token.trim().is_empty() {
-        return Err("未配置 GitHub Token，请先到设置页填写".to_string());
+    if scf_url.trim().is_empty() || api_key.trim().is_empty() {
+        return Err("未配置 SCF 端点，请先到设置页填写".to_string());
     }
-    let client = GitHubClient::new(http.client.clone(), github_token);
-    client.fetch_issue(&owner, &repo, number).await
+    downloader::resolve_issue(&scf_url, number, &api_key, &http.client).await
 }
 
 /// 判断输入是否为纯 reportId（供前端决定是否跳过 Issue 解析）

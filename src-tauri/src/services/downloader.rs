@@ -4,6 +4,7 @@ use std::io::Read;
 use std::path::Path;
 
 use crate::models::log_entry::{LogEntry, LogLevel};
+use crate::services::github::IssueInfo;
 
 /// SCF 下载端点返回的 gzip 包解压后的 JSON 结构
 #[derive(Debug, Deserialize)]
@@ -47,6 +48,53 @@ impl RawLog {
             data: self.data,
         })
     }
+}
+
+/// 通过 SCF `/issue/:number` 端点解析 Issue，拿到 reportId 及元信息。
+///
+/// SCF 服务端用自身 GITHUB_TOKEN 调 GitHub API，提取 Issue body 中的
+/// REPORT_ID 注释及环境信息，避免客户端直连 GitHub、无需用户配置 Token。
+///
+/// - `scf_url`：SCF 函数 URL 根地址
+/// - `number`：Issue 编号
+/// - `api_key`：与下载端点同一把 X-API-Key
+pub async fn resolve_issue(
+    scf_url: &str,
+    number: u32,
+    api_key: &str,
+    http: &reqwest::Client,
+) -> Result<IssueInfo, String> {
+    let url = format!(
+        "{}/issue/{}",
+        scf_url.trim_end_matches('/'),
+        number
+    );
+    let resp = http
+        .get(&url)
+        .header("X-API-Key", api_key)
+        .send()
+        .await
+        .map_err(|e| format!("连接 SCF 失败: {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        // 尝试从响应体取 error 字段做更友好的提示
+        let text = resp.text().await.unwrap_or_default();
+        let detail = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
+            .unwrap_or(text);
+        return Err(match status.as_u16() {
+            401 => format!("SCF 鉴权失败（API Key 无效）: {detail}"),
+            404 => format!("Issue 不存在或未包含上报编号: {detail}"),
+            502 => format!("SCF 上游（GitHub）故障: {detail}"),
+            other => format!("SCF 返回 {other}: {detail}"),
+        });
+    }
+
+    resp.json::<IssueInfo>()
+        .await
+        .map_err(|e| format!("解析 SCF 响应失败: {e}"))
 }
 
 /// 下载 gzip 日志包并解压为日志条目。
