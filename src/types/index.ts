@@ -27,6 +27,30 @@ export interface IssueInfo extends ParsedIssue {
   realm?: string
 }
 
+/** 问题列表项（首页列表展示用） */
+export interface IssueListItem {
+  number: number
+  reportId: string
+  title: string
+  /** Issue 状态：open / closed */
+  state: string
+  issueUrl: string
+  /** 创建时间（ISO 8601） */
+  createdAt: string
+  owner: string
+  repo: string
+  appVersion?: string
+  platform?: string
+  realm?: string
+}
+
+/** SCF /issues 端点的完整响应 */
+export interface IssueList {
+  issues: IssueListItem[]
+  page: number
+  hasMore: boolean
+}
+
 export interface Report {
   reportId: string
   issueNumber?: number
