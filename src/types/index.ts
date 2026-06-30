@@ -42,6 +42,8 @@ export interface IssueListItem {
   appVersion?: string
   platform?: string
   realm?: string
+  /** 当前标签列表 */
+  labels?: string[]
 }
 
 /** SCF /issues 端点的完整响应 */
@@ -49,6 +51,13 @@ export interface IssueList {
   issues: IssueListItem[]
   page: number
   hasMore: boolean
+}
+
+/** SCF /issue/:number/action 端点的响应 */
+export interface IssueActionResponse {
+  ok: boolean
+  state?: string
+  labels?: string[]
 }
 
 export interface Report {

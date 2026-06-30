@@ -1,7 +1,7 @@
 import { reactive, readonly } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 
-import type { IssueList, IssueListItem } from '@/types'
+import type { IssueActionResponse, IssueList, IssueListItem } from '@/types'
 import { settings } from './useSettings'
 
 type IssueState = 'open' | 'all'
@@ -20,6 +20,10 @@ interface IssuesState {
   hasMore: boolean
   /** 是否已初始化（避免重复首拉） */
   loaded: boolean
+  /** 正在操作的 Issue 编号（防重复点击，禁用对应行按钮） */
+  actingNumber: number | null
+  /** 操作错误（独立于列表加载错误，便于菜单内提示） */
+  actionError: string | null
 }
 
 const state = reactive<IssuesState>({
@@ -31,6 +35,8 @@ const state = reactive<IssuesState>({
   page: 0,
   hasMore: false,
   loaded: false,
+  actingNumber: null,
+  actionError: null,
 })
 
 /** 重置列表到初始状态（切换 tab / 手动刷新时用） */
@@ -105,11 +111,62 @@ export async function loadMore(): Promise<void> {
   }
 }
 
+/**
+ * 对指定 Issue 执行操作（关闭/重开/评论/标签）。
+ *
+ * 成功后**乐观更新**本地列表对应项的 state/labels，不重拉整个列表。
+ * 模块内直接改 state.issues（对外 readonly 不影响，因为 readonly 只约束外部引用）。
+ *
+ * @param number Issue 编号
+ * @param action close / reopen / comment / setLabels
+ * @param opts.body 评论内容（action=comment 时）
+ * @param opts.labels 标签数组（action=setLabels 时，整体替换）
+ */
+export async function actOnIssue(
+  number: number,
+  action: 'close' | 'reopen' | 'comment' | 'setLabels',
+  opts?: { body?: string; labels?: string[] },
+): Promise<boolean> {
+  state.actionError = null
+  state.actingNumber = number
+
+  try {
+    const result = await invoke<IssueActionResponse>('act_on_issue', {
+      number,
+      action,
+      body: opts?.body,
+      labels: opts?.labels,
+      scfUrl: settings.scfUrl,
+      apiKey: settings.apiKey,
+    })
+
+    // 乐观更新本地列表项
+    const item = state.issues.find(i => i.number === number)
+    if (item) {
+      if (typeof result.state === 'string') item.state = result.state
+      if (Array.isArray(result.labels)) item.labels = result.labels
+    }
+    return true
+  } catch (e) {
+    state.actionError = typeof e === 'string' ? e : String(e)
+    return false
+  } finally {
+    state.actingNumber = null
+  }
+}
+
+/** 清除操作错误提示 */
+export function clearActionError() {
+  state.actionError = null
+}
+
 export function useIssues() {
   return {
     state: readonly(state),
     loadIssues,
     switchState,
     loadMore,
+    actOnIssue,
+    clearActionError,
   }
 }
