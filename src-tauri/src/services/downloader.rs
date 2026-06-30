@@ -4,7 +4,7 @@ use std::io::Read;
 use std::path::Path;
 
 use crate::models::log_entry::{LogEntry, LogLevel};
-use crate::services::github::{IssueInfo, IssueList};
+use crate::services::github::{IssueActionResponse, IssueInfo, IssueList};
 
 /// SCF 下载端点返回的 gzip 包解压后的 JSON 结构
 ///
@@ -165,6 +165,72 @@ pub async fn list_issues(
     }
 
     resp.json::<IssueList>()
+        .await
+        .map_err(|e| format!("解析 SCF 响应失败: {e}"))
+}
+
+/// 通过 SCF `/issue/:number/action` 端点操作 Issue。
+///
+/// 统一入口，由 `action` 区分：close / reopen / comment / setLabels。
+///
+/// - `scf_url`：SCF 函数 URL 根地址
+/// - `number`：Issue 编号
+/// - `action`：操作类型
+/// - `body`：评论内容（action=comment 时）
+/// - `labels`：标签数组（action=setLabels 时，整体替换）
+/// - `api_key`：与下载端点同一把 X-API-Key
+pub async fn act_on_issue(
+    scf_url: &str,
+    number: u32,
+    action: &str,
+    body: Option<&str>,
+    labels: Option<&[String]>,
+    api_key: &str,
+    http: &reqwest::Client,
+) -> Result<IssueActionResponse, String> {
+    let url = format!(
+        "{}/issue/{}/action",
+        scf_url.trim_end_matches('/'),
+        number
+    );
+
+    // 构造请求体：只包含 action + 对应字段（避免传 null）
+    let mut payload = serde_json::json!({ "action": action });
+    if let Some(b) = body {
+        payload["body"] = serde_json::Value::String(b.to_string());
+    }
+    if let Some(labels) = labels {
+        payload["labels"] = serde_json::Value::Array(
+            labels.iter().map(|l| serde_json::Value::String(l.clone())).collect(),
+        );
+    }
+
+    let resp = http
+        .post(&url)
+        .header("X-API-Key", api_key)
+        .header("Content-Type", "application/json")
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("连接 SCF 失败: {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        let detail = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
+            .unwrap_or(text);
+        return Err(match status.as_u16() {
+            400 => format!("参数无效: {detail}"),
+            401 => format!("SCF 鉴权失败（API Key 无效）: {detail}"),
+            404 => format!("Issue 不存在: {detail}"),
+            502 => format!("SCF 上游（GitHub）故障: {detail}"),
+            other => format!("SCF 返回 {other}: {detail}"),
+        });
+    }
+
+    resp.json::<IssueActionResponse>()
         .await
         .map_err(|e| format!("解析 SCF 响应失败: {e}"))
 }

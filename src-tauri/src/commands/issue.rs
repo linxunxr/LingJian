@@ -61,6 +61,36 @@ pub async fn list_issues(
     downloader::list_issues(&scf_url, st, pg, &api_key, &http.client).await
 }
 
+/// 通过 SCF 端点操作 Issue（关闭/重开/评论/标签）
+///
+/// - `action`：close / reopen / comment / setLabels
+/// - `body`：评论内容（action=comment 时必填）
+/// - `labels`：标签数组（action=setLabels 时必填，整体替换）
+#[tauri::command]
+pub async fn act_on_issue(
+    number: u32,
+    action: String,
+    body: Option<String>,
+    labels: Option<Vec<String>>,
+    scf_url: String,
+    api_key: String,
+    http: State<'_, crate::AppState>,
+) -> Result<crate::services::github::IssueActionResponse, String> {
+    if scf_url.trim().is_empty() || api_key.trim().is_empty() {
+        return Err("未配置 SCF 端点，请先到设置页填写".to_string());
+    }
+    downloader::act_on_issue(
+        &scf_url,
+        number,
+        &action,
+        body.as_deref(),
+        labels.as_deref(),
+        &api_key,
+        &http.client,
+    )
+    .await
+}
+
 /// 判断输入是否为纯 reportId（供前端决定是否跳过 Issue 解析）
 #[tauri::command]
 pub fn is_report_id_input(input: String) -> bool {

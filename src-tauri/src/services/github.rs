@@ -60,6 +60,9 @@ pub struct IssueListItem {
     pub platform: Option<String>,
     #[serde(default)]
     pub realm: Option<String>,
+    /// 当前标签（操作后更新）
+    #[serde(default)]
+    pub labels: Option<Vec<String>>,
 }
 
 /// SCF `/issues` 端点的完整响应
@@ -69,6 +72,19 @@ pub struct IssueList {
     pub issues: Vec<IssueListItem>,
     pub page: u32,
     pub has_more: bool,
+}
+
+/// SCF `/issue/:number/action` 端点的响应
+///
+/// close/reopen 后含 state + labels；comment 后只有 ok；setLabels 后含 labels。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueActionResponse {
+    pub ok: bool,
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub labels: Option<Vec<String>>,
 }
 
 /// Issue URL 正则：https://github.com/{owner}/{repo}/issues/{number}
