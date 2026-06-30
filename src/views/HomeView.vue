@@ -4,14 +4,17 @@ import { useRouter } from 'vue-router'
 import { invoke } from '@tauri-apps/api/core'
 
 import IssueInput from '@/components/IssueInput.vue'
+import IssueList from '@/components/IssueList.vue'
 import { useAnalysis } from '@/composables/useAnalysis'
 import { useSettings, isSettingsComplete } from '@/composables/useSettings'
+import { useIssues } from '@/composables/useIssues'
 import { formatTime } from '@/utils/format'
 import type { Report } from '@/types'
 
 const router = useRouter()
 const { runAnalysis, state } = useAnalysis()
 const { loadSettings } = useSettings()
+const { loadIssues } = useIssues()
 
 const recentReports = ref<Report[]>([])
 const settingsReady = ref(false)
@@ -30,6 +33,7 @@ async function loadRecent() {
   }
 }
 
+/** 分析入口：手动输入或从问题列表点选，统一走 runAnalysis */
 async function onSubmit(input: string) {
   await runAnalysis(input)
   if (state.reportId) {
@@ -40,7 +44,8 @@ async function onSubmit(input: string) {
 onMounted(async () => {
   await loadSettings()
   settingsReady.value = isSettingsComplete()
-  await loadRecent()
+  // 配置完整时自动拉取问题列表；不完整时 loadIssues 内部会静默跳过
+  await Promise.all([loadRecent(), loadIssues()])
 })
 </script>
 
@@ -62,6 +67,10 @@ onMounted(async () => {
         <RouterLink :to="{ name: 'settings' }">设置页</RouterLink>
         填写 SCF 端点配置（URL + API Key）
       </p>
+    </section>
+
+    <section class="remote-issues">
+      <IssueList @select="onSubmit" />
     </section>
 
     <section class="recent">
@@ -117,6 +126,10 @@ onMounted(async () => {
 }
 
 .search {
+  margin-bottom: 2.5rem;
+}
+
+.remote-issues {
   margin-bottom: 2.5rem;
 }
 
