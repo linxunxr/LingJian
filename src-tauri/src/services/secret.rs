@@ -3,17 +3,18 @@ use keyring::Entry;
 /// keyring 服务名（应用标识）
 const SERVICE_NAME: &str = "com.lingjian.app";
 
-/// 凭证类型：GitHub Token / SCF API Key
+/// 凭证类型：SCF API Key
+///
+/// 说明：GitHub Token 凭证已移除——Issue 解析改由 SCF 服务端用自身
+/// GITHUB_TOKEN 代理，客户端不再需要 GitHub Token。
 #[derive(Debug, Clone, Copy)]
 pub enum Secret {
-    GithubToken,
     ScfApiKey,
 }
 
 impl Secret {
     fn entry_name(&self) -> &'static str {
         match self {
-            Secret::GithubToken => "github_token",
             Secret::ScfApiKey => "scf_api_key",
         }
     }

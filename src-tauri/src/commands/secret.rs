@@ -2,18 +2,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::services::secret::{self, Secret};
 
-/// 凭证类型：GitHub Token / SCF API Key
+/// 凭证类型：SCF API Key
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SecretKind {
-    GithubToken,
     ScfApiKey,
 }
 
 impl From<SecretKind> for Secret {
     fn from(kind: SecretKind) -> Self {
         match kind {
-            SecretKind::GithubToken => Secret::GithubToken,
             SecretKind::ScfApiKey => Secret::ScfApiKey,
         }
     }

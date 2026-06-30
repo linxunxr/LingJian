@@ -77,7 +77,6 @@ pub fn run() {
             secret::set_secret,
             secret::get_secret,
             secret::delete_secret,
-            settings::verify_github_token,
             settings::test_scf_endpoint,
             storage::get_storage_info,
             storage::change_data_dir,
