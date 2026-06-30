@@ -10,31 +10,13 @@ const emit = defineEmits<{
 
 const { settings } = useSettings()
 
-const step = ref<1 | 2 | 3>(1)
+const step = ref<1 | 2>(1)
 const saving = ref(false)
 const error = ref<string | null>(null)
 
-// GitHub 验证状态
-const verifyingGithub = ref(false)
-const githubResult = ref<{ ok: boolean; msg: string } | null>(null)
 // SCF 验证状态
 const verifyingScf = ref(false)
 const scfResult = ref<{ ok: boolean; msg: string } | null>(null)
-
-async function verifyGithub() {
-  verifyingGithub.value = true
-  githubResult.value = null
-  try {
-    const login = await invoke<string>('verify_github_token', {
-      githubToken: settings.githubToken,
-    })
-    githubResult.value = { ok: true, msg: `验证通过，账号: ${login}` }
-  } catch (e) {
-    githubResult.value = { ok: false, msg: typeof e === 'string' ? e : String(e) }
-  } finally {
-    verifyingGithub.value = false
-  }
-}
 
 async function verifyScf() {
   verifyingScf.value = true
@@ -54,7 +36,7 @@ async function verifyScf() {
 
 async function finish() {
   if (!isSettingsComplete()) {
-    error.value = '请填写完整的三项配置'
+    error.value = '请填写完整的 SCF 配置'
     return
   }
   saving.value = true
@@ -86,43 +68,19 @@ function skip() {
         <span :class="['step-dot', { active: step >= 1 }, { current: step === 1 }]">1</span>
         <span class="step-line" />
         <span :class="['step-dot', { active: step >= 2 }, { current: step === 2 }]">2</span>
-        <span class="step-line" />
-        <span :class="['step-dot', { active: step >= 3 }, { current: step === 3 }]">3</span>
       </div>
 
-      <!-- 步骤 1：GitHub Token -->
+      <!-- 步骤 1：SCF 端点 -->
       <div v-if="step === 1" class="step-body">
-        <h3 class="step-title">配置 GitHub Token</h3>
+        <h3 class="step-title">配置 SCF 端点</h3>
         <p class="step-desc">
-          灵鉴通过 GitHub API 获取 Issue 并解析上报编号。创建一个 Fine-grained Token，
-          仅需目标仓库的 Issues 读取权限。
-        </p>
-        <label class="field-label">GitHub Token</label>
-        <input v-model="settings.githubToken" type="password" class="field-input" placeholder="ghp_..." />
-        <div class="verify-row">
-          <button class="verify-btn" :disabled="verifyingGithub || !settings.githubToken" @click="verifyGithub">
-            {{ verifyingGithub ? '验证中...' : '验证连接' }}
-          </button>
-          <span v-if="githubResult" :class="['verify-result', githubResult.ok ? 'ok' : 'fail']">
-            {{ githubResult.ok ? '✓' : '✗' }} {{ githubResult.msg }}
-          </span>
-        </div>
-        <div class="step-actions">
-          <button class="ghost-btn" @click="skip">稍后配置</button>
-          <button class="primary-btn" @click="step = 2">下一步</button>
-        </div>
-      </div>
-
-      <!-- 步骤 2：SCF 端点 -->
-      <div v-else-if="step === 2" class="step-body">
-        <h3 class="step-title">配置 SCF 下载端点</h3>
-        <p class="step-desc">
-          日志压缩包存储在腾讯云 COS，通过 SCF 函数 URL 下载。填写端点地址和鉴权密钥。
+          灵鉴通过腾讯云 SCF 云函数获取 Issue 信息并下载日志压缩包（日志存储于 COS）。
+          填写端点地址和鉴权密钥即可。
         </p>
         <label class="field-label">SCF URL</label>
         <input v-model="settings.scfUrl" type="text" class="field-input" placeholder="https://xxxx.tencentscf.com" />
         <label class="field-label">API Key</label>
-        <input v-model="settings.apiKey" type="password" class="field-input" placeholder="下载端点鉴权密钥" />
+        <input v-model="settings.apiKey" type="password" class="field-input" placeholder="端点鉴权密钥" />
         <div class="verify-row">
           <button class="verify-btn" :disabled="verifyingScf || !settings.scfUrl" @click="verifyScf">
             {{ verifyingScf ? '测试中...' : '测试下载' }}
@@ -132,21 +90,21 @@ function skip() {
           </span>
         </div>
         <div class="step-actions">
-          <button class="ghost-btn" @click="step = 1">上一步</button>
-          <button class="primary-btn" @click="step = 3">下一步</button>
+          <button class="ghost-btn" @click="skip">稍后配置</button>
+          <button class="primary-btn" @click="step = 2">下一步</button>
         </div>
       </div>
 
-      <!-- 步骤 3：完成 -->
+      <!-- 步骤 2：完成 -->
       <div v-else class="step-body">
         <h3 class="step-title">配置完成</h3>
         <p class="step-desc">
           一切就绪！现在可以在首页输入 Issue URL 或编号开始分析日志。
-          凭证已加密存储于系统钥匙串。
+          API Key 已加密存储于系统钥匙串。
         </p>
         <p v-if="error" class="error-msg">{{ error }}</p>
         <div class="step-actions">
-          <button class="ghost-btn" @click="step = 2">上一步</button>
+          <button class="ghost-btn" @click="step = 1">上一步</button>
           <button class="primary-btn" :disabled="saving" @click="finish">
             {{ saving ? '保存中...' : '开始使用' }}
           </button>

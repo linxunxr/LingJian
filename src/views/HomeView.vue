@@ -60,7 +60,7 @@ onMounted(async () => {
       <p v-if="!settingsReady" class="warn-msg">
         ⚠ 检测到配置不完整，请先到
         <RouterLink :to="{ name: 'settings' }">设置页</RouterLink>
-        填写 GitHub Token 和 SCF 下载端点
+        填写 SCF 端点配置（URL + API Key）
       </p>
     </section>
 

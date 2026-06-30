@@ -21,6 +21,10 @@ export interface ParsedIssue {
 export interface IssueInfo extends ParsedIssue {
   reportId: string
   title: string
+  /** 上报环境信息（由 SCF 从 Issue body 环境表格提取，可选） */
+  appVersion?: string
+  platform?: string
+  realm?: string
 }
 
 export interface Report {

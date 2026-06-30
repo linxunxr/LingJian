@@ -11,10 +11,6 @@ const saving = ref(false)
 const saved = ref(false)
 const error = ref<string | null>(null)
 
-// GitHub 验证状态
-const verifyingGithub = ref(false)
-const githubResult = ref<{ ok: boolean; msg: string } | null>(null)
-
 // SCF 验证状态
 const verifyingScf = ref(false)
 const scfResult = ref<{ ok: boolean; msg: string } | null>(null)
@@ -31,21 +27,6 @@ async function onSave() {
     error.value = typeof e === 'string' ? e : String(e)
   } finally {
     saving.value = false
-  }
-}
-
-async function verifyGithub() {
-  verifyingGithub.value = true
-  githubResult.value = null
-  try {
-    const login = await invoke<string>('verify_github_token', {
-      githubToken: settings.githubToken,
-    })
-    githubResult.value = { ok: true, msg: `验证通过，账号: ${login}` }
-  } catch (e) {
-    githubResult.value = { ok: false, msg: typeof e === 'string' ? e : String(e) }
-  } finally {
-    verifyingGithub.value = false
   }
 }
 
@@ -72,35 +53,19 @@ onMounted(loadSettings)
   <div class="settings">
     <h2 class="settings-title">设置</h2>
     <p class="settings-hint">
-      Token 和 API Key 加密存储于系统钥匙串，SCF URL 存于本地配置文件
+      API Key 加密存储于系统钥匙串，SCF URL 存于本地配置文件
     </p>
 
     <section class="card">
-      <h3 class="card-title">GitHub 配置</h3>
-      <div class="field">
-        <label class="field-label">Token</label>
-        <input v-model="settings.githubToken" type="password" class="field-input" placeholder="ghp_..." />
-        <p class="field-hint">用于通过 GitHub API 获取 Issue 并解析 reportId（仅需 issues: read 权限）</p>
-      </div>
-      <div class="verify-row">
-        <button class="verify-btn" :disabled="verifyingGithub" @click="verifyGithub">
-          {{ verifyingGithub ? '验证中...' : '验证连接' }}
-        </button>
-        <span v-if="githubResult" :class="['verify-result', githubResult.ok ? 'ok' : 'fail']">
-          {{ githubResult.ok ? '✓' : '✗' }} {{ githubResult.msg }}
-        </span>
-      </div>
-    </section>
-
-    <section class="card">
-      <h3 class="card-title">SCF 下载端点</h3>
+      <h3 class="card-title">SCF 端点</h3>
       <div class="field">
         <label class="field-label">URL</label>
         <input v-model="settings.scfUrl" type="text" class="field-input" placeholder="https://xxxx.tencentscf.com" />
       </div>
       <div class="field">
         <label class="field-label">API Key</label>
-        <input v-model="settings.apiKey" type="password" class="field-input" placeholder="下载端点鉴权密钥" />
+        <input v-model="settings.apiKey" type="password" class="field-input" placeholder="端点鉴权密钥" />
+        <p class="field-hint">同一个 API Key 同时用于解析 Issue 和下载日志</p>
       </div>
       <div class="verify-row">
         <button class="verify-btn" :disabled="verifyingScf" @click="verifyScf">

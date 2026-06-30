@@ -63,6 +63,7 @@ export async function runAnalysis(input: string): Promise<void> {
   try {
     // 1. 确定 reportId
     let reportId: string
+    let issueInfo: IssueInfo | null = null
     const isUuid = await invoke<boolean>('is_report_id_input', { input: trimmed })
 
     if (isUuid) {
@@ -74,22 +75,31 @@ export async function runAnalysis(input: string): Promise<void> {
         { url: trimmed },
       )
       const info = await invoke<IssueInfo>('fetch_issue_info', {
-        owner: parsed.owner,
-        repo: parsed.repo,
         number: parsed.number,
-        githubToken: settings.githubToken,
+        scfUrl: settings.scfUrl,
+        apiKey: settings.apiKey,
       })
       state.issue = info
+      issueInfo = info
       reportId = info.reportId
     }
     state.reportId = reportId
 
-    // 2. 下载
+    // 2. 下载（透传 Issue 元信息，存在则一并落库）
     state.stage = 'downloading'
     const downloaded = await invoke<DownloadResult>('download_log', {
       reportId,
       scfUrl: settings.scfUrl,
       apiKey: settings.apiKey,
+      issueMeta: issueInfo
+        ? {
+            issueNumber: issueInfo.number,
+            issueTitle: issueInfo.title,
+            appVersion: issueInfo.appVersion,
+            platform: issueInfo.platform,
+            realm: issueInfo.realm,
+          }
+        : null,
     })
     state.download = downloaded
 
