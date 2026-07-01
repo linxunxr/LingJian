@@ -44,7 +44,7 @@
       "endpoints": [
         "https://lingjian-releases-1433733625.cos.ap-guangzhou.myqcloud.com/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI3QjlCMTI5MjE5MTMwMEYKUldRUE1KRWhLYkc1dDZpWHlYS0owUTA1RFdzNGhpTWtqUThIRFBJeVc2ZXlzQWc5eW1pK2h0ZkYK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEUzNzIyQ0UyMjJDREJDMjAKUldRZ3ZNMGk0aXh5NHd3NEEvaEdNTlc5dzEyRy9jZmswT2RhaVFIRyt6aDJjcVpub3EvNkRERkQK",
       "windows": {
         "installMode": "passive"
       }
