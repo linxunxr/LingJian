@@ -89,12 +89,8 @@ jobs:
             --dir dist \
             --clobber
 
-      - name: Rewrite latest.json URLs to COS
-        run: |
-          node scripts/rewrite-latest-json.mjs dist/latest.json
-
-      - name: Inject changelog into latest.json
-        run: node scripts/inject-changelog.mjs dist/latest.json "${{ github.ref_name }}"
+      - name: Generate latest.json from assets
+        run: node scripts/generate-latest-json.mjs dist "${{ github.ref_name }}"
 
       - name: Install COS CLI
         run: |
