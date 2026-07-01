@@ -1,6 +1,9 @@
 name: Release
 
-# 推送 v* 格式的 tag 时触发发布
+# 推送 v* 格式的 tag 时触发发布。
+# 仓库为私有，GitHub Release 资源不可匿名访问，因此客户端更新只走腾讯云 COS：
+#   构建 → 发 Release（产物中转）→ 镜像到 COS（对用户分发）。
+# 更新日志由 inject-changelog.mjs 从 CHANGELOG.md 提取，写入 latest.json 的 notes 字段。
 on:
   push:
     tags:
@@ -89,6 +92,9 @@ jobs:
       - name: Rewrite latest.json URLs to COS
         run: |
           node scripts/rewrite-latest-json.mjs dist/latest.json
+
+      - name: Inject changelog into latest.json
+        run: node scripts/inject-changelog.mjs dist/latest.json "${{ github.ref_name }}"
 
       - name: Install COS CLI
         run: |
