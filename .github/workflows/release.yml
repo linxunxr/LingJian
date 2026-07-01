@@ -1,0 +1,119 @@
+name: Release
+
+# 推送 v* 格式的 tag 时触发发布。
+# 仓库为私有，GitHub Release 资源不可匿名访问，因此客户端更新只走腾讯云 COS：
+#   构建 → 发 Release（产物中转）→ 镜像到 COS（对用户分发）。
+# 更新日志由 inject-changelog.mjs 从 CHANGELOG.md 提取，写入 latest.json 的 notes 字段。
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  publish:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: '--target aarch64-apple-darwin'
+          - platform: macos-latest
+            args: '--target x86_64-apple-darwin'
+          - platform: ubuntu-22.04
+            args: ''
+          - platform: windows-latest
+            args: '--bundles nsis'
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Install dependencies (ubuntu)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and publish
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 签名密钥（GitHub Secrets 中配置）
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: '灵鉴 ${{ github.ref_name }}'
+          releaseBody: '请查看 Assets 下载对应平台的安装包。'
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}
+
+  # 构建完成后，同步所有产物到腾讯云 COS（国内加速）
+  mirror-to-cos:
+    needs: publish
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Download all release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p dist
+          # 下载本次 Release 的所有 assets 到 dist/
+          gh release download "${{ github.ref_name }}" \
+            --repo linxunxr/LingJian \
+            --dir dist \
+            --clobber
+
+      - name: Rewrite latest.json URLs to COS
+        run: |
+          node scripts/rewrite-latest-json.mjs dist/latest.json
+
+      - name: Inject changelog into latest.json
+        run: node scripts/inject-changelog.mjs dist/latest.json "${{ github.ref_name }}"
+
+      - name: Install COS CLI
+        run: |
+          pip install coscmd
+
+      - name: Configure COS CLI
+        run: |
+          coscmd config \
+            -a "${{ secrets.COS_SECRET_ID }}" \
+            -s "${{ secrets.COS_SECRET_KEY }}" \
+            -b "lingjian-releases-1433733625" \
+            -r "ap-guangzhou"
+
+      - name: Upload all assets to COS
+        run: |
+          # 上传所有产物到 COS 根目录（与 latest.json 中的 URL 路径一致）
+          for file in dist/*; do
+            filename=$(basename "$file")
+            echo "上传: $filename"
+            coscmd upload "$file" "/$filename"
+          done
+          echo "✓ COS 同步完成"

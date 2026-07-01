@@ -16,9 +16,16 @@ tauri-plugin-store = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
+tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", features = ["json"] }
 flate2 = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }
 regex = "1"
+log = "0.4"
+chrono = "0.4"
+keyring = "3"
+
+[dev-dependencies]
+tempfile = "3"

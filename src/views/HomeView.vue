@@ -1,20 +1,52 @@
 <script setup lang="ts">
+import { onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { invoke } from '@tauri-apps/api/core'
-import { ref } from 'vue'
 
-const message = ref('')
-const loading = ref(false)
+import IssueInput from '@/components/IssueInput.vue'
+import IssueList from '@/components/IssueList.vue'
+import { useAnalysis } from '@/composables/useAnalysis'
+import { useSettings, isSettingsComplete } from '@/composables/useSettings'
+import { useIssues } from '@/composables/useIssues'
+import { formatTime } from '@/utils/format'
+import type { Report } from '@/types'
 
-async function testGreet() {
-  loading.value = true
+const router = useRouter()
+const { runAnalysis, state } = useAnalysis()
+const { loadSettings } = useSettings()
+const { loadIssues } = useIssues()
+
+const recentReports = ref<Report[]>([])
+const settingsReady = ref(false)
+
+const stageText: Record<string, string> = {
+  parsing: '正在解析 Issue...',
+  downloading: '正在下载日志...',
+  analyzing: '正在分析日志...',
+}
+
+async function loadRecent() {
   try {
-    message.value = await invoke('greet', { name: '修仙者' })
-  } catch (e) {
-    message.value = `错误: ${e}`
-  } finally {
-    loading.value = false
+    recentReports.value = await invoke<Report[]>('list_recent_reports', { limit: 10 })
+  } catch {
+    recentReports.value = []
   }
 }
+
+/** 分析入口：手动输入或从问题列表点选，统一走 runAnalysis */
+async function onSubmit(input: string) {
+  await runAnalysis(input)
+  if (state.reportId) {
+    router.push({ name: 'analyze', query: { id: state.reportId } })
+  }
+}
+
+onMounted(async () => {
+  await loadSettings()
+  settingsReady.value = isSettingsComplete()
+  // 配置完整时自动拉取问题列表；不完整时 loadIssues 内部会静默跳过
+  await Promise.all([loadRecent(), loadIssues()])
+})
 </script>
 
 <template>
@@ -24,35 +56,64 @@ async function testGreet() {
       <p class="hero-desc">Path of Idle Immortals 日志分析工具</p>
     </section>
 
-    <section class="actions">
-      <button class="btn btn-gold" @click="testGreet" :disabled="loading">
-        {{ loading ? '连接中...' : '测试后端连接' }}
-      </button>
-      <p v-if="message" class="response">{{ message }}</p>
+    <section class="search">
+      <IssueInput :loading="state.stage !== 'idle' && state.stage !== 'done'" @submit="onSubmit" />
+      <p v-if="state.error" class="error-msg">{{ state.error }}</p>
+      <p v-else-if="state.stage !== 'idle' && state.stage !== 'done'" class="stage-msg">
+        {{ stageText[state.stage] }}
+      </p>
+      <p v-if="!settingsReady" class="warn-msg">
+        ⚠ 检测到配置不完整，请先到
+        <RouterLink :to="{ name: 'settings' }">设置页</RouterLink>
+        填写 SCF 端点配置（URL + API Key）
+      </p>
+    </section>
+
+    <section class="remote-issues">
+      <IssueList @select="onSubmit" />
+    </section>
+
+    <section class="recent">
+      <h3 class="section-title">最近分析</h3>
+      <div v-if="recentReports.length === 0" class="empty">暂无分析记录</div>
+      <ul v-else class="report-list">
+        <li
+          v-for="report in recentReports"
+          :key="report.reportId"
+          class="report-item"
+          @click="router.push({ name: 'analyze', query: { id: report.reportId } })"
+        >
+          <span class="report-issue">
+            {{ report.issueNumber ? `#${report.issueNumber}` : '—' }}
+          </span>
+          <span class="report-title">{{ report.issueTitle ?? report.reportId.slice(0, 8) }}</span>
+          <span class="report-count">{{ report.logCount }} 条</span>
+          <span class="report-time">{{ formatTime(report.downloadedAt) }}</span>
+        </li>
+      </ul>
     </section>
   </div>
 </template>
 
 <style scoped>
 .home {
-  max-width: 640px;
+  max-width: 760px;
   margin: 0 auto;
 }
 
 .hero {
   text-align: center;
-  padding: 3rem 0 2rem;
+  padding: 2.5rem 0 2rem;
 }
 
 .hero-title {
-  font-size: 2rem;
+  font-size: 1.75rem;
   font-weight: 700;
-  color: var(--color-gold);
-  letter-spacing: 0.15em;
+  color: var(--color-text-bright);
 }
 
 .version {
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
   font-weight: 400;
   color: var(--color-text-muted);
   vertical-align: super;
@@ -61,47 +122,107 @@ async function testGreet() {
 .hero-desc {
   margin-top: 0.5rem;
   color: var(--color-text-muted);
-  font-size: 0.9rem;
+  font-size: 0.875rem;
 }
 
-.actions {
-  text-align: center;
-  margin-top: 2rem;
+.search {
+  margin-bottom: 2.5rem;
 }
 
-.btn {
-  padding: 0.6rem 1.5rem;
-  border: none;
+.remote-issues {
+  margin-bottom: 2.5rem;
+}
+
+.error-msg {
+  margin-top: 0.75rem;
+  padding: 0.625rem 0.875rem;
+  background-color: rgba(239, 68, 68, 0.1);
+  border: 1px solid var(--color-danger);
   border-radius: var(--radius-md);
+  color: var(--color-danger);
+  font-size: 0.8125rem;
+}
+
+.stage-msg {
+  margin-top: 0.75rem;
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
+}
+
+.warn-msg {
+  margin-top: 0.75rem;
+  padding: 0.625rem 0.875rem;
+  background-color: rgba(245, 158, 11, 0.1);
+  border: 1px solid var(--color-warning);
+  border-radius: var(--radius-md);
+  color: var(--color-warning);
+  font-size: 0.8125rem;
+}
+
+.section-title {
   font-size: 0.9rem;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.btn-gold {
-  background: linear-gradient(135deg, var(--color-gold-dim), var(--color-gold));
-  color: #0a0e1a;
   font-weight: 600;
+  color: var(--color-text);
+  margin-bottom: 0.75rem;
 }
 
-.btn-gold:hover:not(:disabled) {
-  background: linear-gradient(135deg, var(--color-gold), var(--color-gold-bright));
-  box-shadow: 0 0 16px rgba(212, 168, 67, 0.3);
+.empty {
+  padding: 2rem 0;
+  text-align: center;
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
 }
 
-.response {
-  margin-top: 1rem;
-  padding: 0.75rem 1rem;
-  background-color: var(--color-surface-alt);
+.report-list {
+  list-style: none;
+  background-color: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.report-item {
+  display: grid;
+  grid-template-columns: 60px 1fr 80px 160px;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  font-size: 0.8125rem;
+  cursor: pointer;
+  transition: background-color var(--transition-fast);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.report-item:last-child {
+  border-bottom: none;
+}
+
+.report-item:hover {
+  background-color: var(--color-surface-alt);
+}
+
+.report-issue {
+  color: var(--color-primary);
+  font-weight: 600;
   font-family: var(--font-mono);
-  font-size: 0.85rem;
-  color: var(--color-success);
+}
+
+.report-title {
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report-count {
+  color: var(--color-text-muted);
+  text-align: right;
+}
+
+.report-time {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  text-align: right;
 }
 </style>

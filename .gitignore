@@ -11,3 +11,9 @@ dist/
 
 # Tauri
 src-tauri/target/
+src-tauri/gen/
+
+# Tauri updater signing key (NEVER commit)
+.tauri_signing_key
+*.pem
+.env

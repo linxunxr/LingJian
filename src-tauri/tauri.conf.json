@@ -29,6 +29,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -36,5 +37,17 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://lingjian-releases-1433733625.cos.ap-guangzhou.myqcloud.com/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEUzNzIyQ0UyMjJDREJDMjAKUldRZ3ZNMGk0aXh5NHd3NEEvaEdNTlc5dzEyRy9jZmswT2RhaVFIRyt6aDJjcVpub3EvNkRERkQK",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }
