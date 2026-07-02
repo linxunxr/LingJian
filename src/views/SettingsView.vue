@@ -38,7 +38,9 @@ async function verifyScf() {
       scfUrl: settings.scfUrl,
       apiKey: settings.apiKey,
     })
-    scfResult.value = { ok: true, msg: '端点连通，鉴权配置正确' }
+    // 测试通过即说明配置有效，顺手持久化，避免「测试通过但没保存」的半状态
+    await saveSettings()
+    scfResult.value = { ok: true, msg: '端点连通，鉴权配置正确（已保存）' }
   } catch (e) {
     scfResult.value = { ok: false, msg: typeof e === 'string' ? e : String(e) }
   } finally {

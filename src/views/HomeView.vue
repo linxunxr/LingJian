@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { invoke } from '@tauri-apps/api/core'
 
@@ -17,7 +17,8 @@ const { loadSettings } = useSettings()
 const { loadIssues } = useIssues()
 
 const recentReports = ref<Report[]>([])
-const settingsReady = ref(false)
+// 响应式跟随全局 settings：保存配置后无需重载页面即可刷新横幅状态
+const settingsReady = computed(() => isSettingsComplete())
 
 const stageText: Record<string, string> = {
   parsing: '正在解析 Issue...',
@@ -43,7 +44,7 @@ async function onSubmit(input: string) {
 
 onMounted(async () => {
   await loadSettings()
-  settingsReady.value = isSettingsComplete()
+  // settingsReady 已是 computed，loadSettings 更新全局 settings 后自动重算
   // 配置完整时自动拉取问题列表；不完整时 loadIssues 内部会静默跳过
   await Promise.all([loadRecent(), loadIssues()])
 })
