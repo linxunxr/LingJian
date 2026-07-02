@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <!-- 背景渐变：深蓝 → 更深的蓝 -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E293B"/>
+      <stop offset="100%" stop-color="#0F172A"/>
+    </linearGradient>
+    <!-- 主色蓝渐变（柱状图） -->
+    <linearGradient id="barGrad" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#1D4ED8"/>
+      <stop offset="100%" stop-color="#3B82F6"/>
+    </linearGradient>
+    <!-- 高亮蓝渐变（突出柱） -->
+    <linearGradient id="barHi" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#3B82F6"/>
+      <stop offset="100%" stop-color="#60A5FA"/>
+    </linearGradient>
+    <!-- 折线发光 -->
+    <linearGradient id="lineGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#93C5FD"/>
+      <stop offset="100%" stop-color="#F8FAFC"/>
+    </linearGradient>
+    <!-- 背景网格（数据感） -->
+    <pattern id="grid" width="64" height="64" patternUnits="userSpaceOnUse">
+      <path d="M 64 0 L 0 0 0 64" fill="none" stroke="#3B82F6" stroke-width="1" opacity="0.08"/>
+    </pattern>
+    <!-- 圆角裁剪 -->
+    <clipPath id="rounded">
+      <rect x="0" y="0" width="1024" height="1024" rx="224" ry="224"/>
+    </clipPath>
+    <!-- 折线发光滤镜 -->
+    <filter id="lineGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <g clip-path="url(#rounded)">
+    <!-- 背景 -->
+    <rect width="1024" height="1024" fill="url(#bgGrad)"/>
+    <!-- 数据网格底纹 -->
+    <rect width="1024" height="1024" fill="url(#grid)"/>
+
+    <!-- 顶部「灵光」点缀：呼应"灵鉴" -->
+    <circle cx="512" cy="196" r="26" fill="#60A5FA"/>
+    <circle cx="512" cy="196" r="52" fill="#3B82F6" opacity="0.25"/>
+    <circle cx="512" cy="196" r="84" fill="#3B82F6" opacity="0.10"/>
+
+    <!-- 柱状图（数据分析核心意象） -->
+    <g>
+      <rect x="256" y="600" width="96" height="200" rx="16" fill="url(#barGrad)"/>
+      <rect x="400" y="520" width="96" height="280" rx="16" fill="url(#barGrad)"/>
+      <!-- 中间最高柱 = 高亮的洞察峰值 -->
+      <rect x="544" y="400" width="96" height="400" rx="16" fill="url(#barHi)"/>
+      <rect x="688" y="560" width="96" height="240" rx="16" fill="url(#barGrad)"/>
+    </g>
+
+    <!-- 洞察折线（在柱顶之上，"鉴"的审视轨迹） -->
+    <polyline
+      points="304,560 448,480 592,360 736,520"
+      fill="none"
+      stroke="url(#lineGrad)"
+      stroke-width="14"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      filter="url(#lineGlow)"
+    />
+    <!-- 折线节点 -->
+    <circle cx="304" cy="560" r="16" fill="#F8FAFC"/>
+    <circle cx="448" cy="480" r="16" fill="#F8FAFC"/>
+    <circle cx="592" cy="360" r="20" fill="#F8FAFC"/>
+    <circle cx="592" cy="360" r="34" fill="#FFFFFF" opacity="0.25"/>
+    <circle cx="736" cy="520" r="16" fill="#F8FAFC"/>
+
+    <!-- 底部基线 -->
+    <rect x="200" y="824" width="624" height="6" rx="3" fill="#3B82F6" opacity="0.35"/>
+  </g>
+
+  <!-- 外圈细描边（提升边缘清晰度） -->
+  <rect x="4" y="4" width="1016" height="1016" rx="222" ry="222"
+        fill="none" stroke="#334155" stroke-width="8" opacity="0.6"/>
+</svg>
