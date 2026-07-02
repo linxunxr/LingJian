@@ -9,9 +9,13 @@ const MARKER_FILENAME: &str = "data_dir.txt";
 /// 解析生效的数据目录。
 ///
 /// 优先级：
-/// 1. 标记文件已记录的路径（用户曾更改过 / 上次已确定）→ 直接用
+/// 1. 标记文件已记录的路径（由安装版广播或用户手动切换写入）→ 直接用
 /// 2. exe 同级目录下的 `data/`，且可写 → 用它（绿色便携，跟随安装位置）
 /// 3. 系统默认 `app_data_dir`（兜底，如装在 Program Files 无写权限时）
+///
+/// **标记文件写入规则**：开发构建（调试版）只读取标记、永不自动写入；
+/// 标记仅由「安装版运行」或「用户在 UI 手动更改目录」产生。
+/// 这样调试版能自动跟随安装版广播的安装路径，又不会反过来污染标记。
 pub fn resolve_data_dir(fallback_dir: &Path) -> PathBuf {
     let marker_path = fallback_dir.join(MARKER_FILENAME);
 
@@ -28,14 +32,18 @@ pub fn resolve_data_dir(fallback_dir: &Path) -> PathBuf {
     // 2. exe 同级 data 目录
     if let Some(exe_data_dir) = exe_sibling_data_dir() {
         if ensure_dir(&exe_data_dir) && is_writable(&exe_data_dir) {
-            persist_marker(&marker_path, &exe_data_dir);
+            if !is_dev_build() {
+                persist_marker(&marker_path, &exe_data_dir);
+            }
             return exe_data_dir;
         }
     }
 
     // 3. 兜底：系统默认目录
     if ensure_dir(fallback_dir) {
-        persist_marker(&marker_path, fallback_dir);
+        if !is_dev_build() {
+            persist_marker(&marker_path, fallback_dir);
+        }
     }
     fallback_dir.to_path_buf()
 }
@@ -75,6 +83,38 @@ fn exe_sibling_data_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let exe_dir = exe.parent()?;
     Some(exe_dir.join("data"))
+}
+
+/// 判断给定 exe 路径是否位于 cargo 输出目录。
+///
+/// 沿路径分量查找相邻的 `target` + (`debug`|`release`)，命中即为开发构建。
+/// 覆盖：`target/debug/x.exe`、`target/release/x.exe`、`target/debug/deps/x-hash.exe`。
+/// 要求 `target` 与 `debug`/`release` 相邻，避免安装到名为 target 的文件夹时误判。
+fn is_under_cargo_target(exe: &Path) -> bool {
+    let components: Vec<_> = exe
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect();
+    for i in 0..components.len().saturating_sub(1) {
+        if components[i] == "target"
+            && matches!(components[i + 1], "debug" | "release")
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// 当前运行的是否为开发构建（调试版）。
+///
+/// 任一命中即判定为开发构建：
+/// 1. `cfg!(debug_assertions)` 为 true —— 覆盖 `npm run tauri dev`，且不受自定义 `CARGO_TARGET_DIR` 影响
+/// 2. exe 位于 cargo 输出目录 —— 覆盖 `cargo run --release` 等
+fn is_dev_build() -> bool {
+    cfg!(debug_assertions)
+        || std::env::current_exe()
+            .map(|exe| is_under_cargo_target(&exe))
+            .unwrap_or(false)
 }
 
 /// 确保目录存在，返回是否最终可用
@@ -170,6 +210,43 @@ pub fn clear_cache(data_dir: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn is_under_cargo_target_recognizes_dev_paths() {
+        // 常规开发构建路径
+        assert!(is_under_cargo_target(Path::new(
+            "/home/u/proj/target/debug/lingjian"
+        )));
+        assert!(is_under_cargo_target(Path::new(
+            "C:/proj/target/release/lingjian.exe"
+        )));
+        // deps 子层（测试二进制所在）
+        assert!(is_under_cargo_target(Path::new(
+            "C:/proj/target/debug/deps/lingjian-abc123.exe"
+        )));
+    }
+
+    #[test]
+    fn is_under_cargo_target_rejects_non_target_paths() {
+        // 安装目录（即使含 target 字样但与 debug/release 不相邻）
+        assert!(!is_under_cargo_target(Path::new(
+            "D:/200software/285Lingjian/灵鉴/灵鉴.exe"
+        )));
+        // 名为 target 的普通文件夹但不相邻
+        assert!(!is_under_cargo_target(Path::new(
+            "D:/mytarget/debug/x.exe"
+        )));
+        // 无 target 分量的路径（如自定义 CARGO_TARGET_DIR 的根 C:/out/debug）严格不命中
+        assert!(!is_under_cargo_target(Path::new("C:/out/debug/x.exe")));
+        // 无 target 的纯安装路径
+        assert!(!is_under_cargo_target(Path::new("C:/Program Files/灵鉴/灵鉴.exe")));
+    }
+
+    #[test]
+    fn is_dev_build_true_under_cargo_test() {
+        // 测试二进制由 cargo 编译到 target/debug/deps/，必为开发构建
+        assert!(is_dev_build());
+    }
 
     #[test]
     fn resolve_uses_marker_when_valid() {
