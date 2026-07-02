@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E293B"/>
+      <stop offset="100%" stop-color="#0F172A"/>
+    </linearGradient>
+    <linearGradient id="bar" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#1D4ED8"/>
+      <stop offset="100%" stop-color="#3B82F6"/>
+    </linearGradient>
+    <linearGradient id="barh" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#3B82F6"/>
+      <stop offset="100%" stop-color="#60A5FA"/>
+    </linearGradient>
+    <linearGradient id="ln" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#93C5FD"/>
+      <stop offset="100%" stop-color="#F8FAFC"/>
+    </linearGradient>
+    <clipPath id="r"><rect width="1024" height="1024" rx="224"/></clipPath>
+  </defs>
+  <g clip-path="url(#r)">
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+    <circle cx="512" cy="196" r="26" fill="#60A5FA"/>
+    <circle cx="512" cy="196" r="60" fill="#3B82F6" opacity="0.18"/>
+    <rect x="256" y="600" width="96" height="200" rx="16" fill="url(#bar)"/>
+    <rect x="400" y="520" width="96" height="280" rx="16" fill="url(#bar)"/>
+    <rect x="544" y="400" width="96" height="400" rx="16" fill="url(#barh)"/>
+    <rect x="688" y="560" width="96" height="240" rx="16" fill="url(#bar)"/>
+    <polyline points="304,560 448,480 592,360 736,520" fill="none" stroke="url(#ln)" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="304" cy="560" r="16" fill="#F8FAFC"/>
+    <circle cx="448" cy="480" r="16" fill="#F8FAFC"/>
+    <circle cx="592" cy="360" r="20" fill="#F8FAFC"/>
+    <circle cx="736" cy="520" r="16" fill="#F8FAFC"/>
+    <rect x="200" y="824" width="624" height="6" rx="3" fill="#3B82F6" opacity="0.35"/>
+  </g>
+  <rect x="4" y="4" width="1016" height="1016" rx="222" fill="none" stroke="#334155" stroke-width="8" opacity="0.6"/>
+</svg>
