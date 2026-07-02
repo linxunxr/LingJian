@@ -47,12 +47,14 @@ def build_client():
         sys.exit(1)
 
     # scheme + 超时：连接 60s（跨洲握手慢），读写 60s
+    # Endpoint 指向全球加速域名，CI 跨洲上传走最近接入点
     config = CosConfig(
         Region=region,
         SecretId=secret_id,
         SecretKey=secret_key,
         Scheme='https',
         Timeout=60,
+        Endpoint='cos.accelerate.myqcloud.com',
     )
     return CosS3Client(config), bucket
 
