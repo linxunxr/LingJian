@@ -26,7 +26,6 @@ from qcloud_cos import CosConfig, CosS3Client
 
 # 上传策略参数（针对跨洲不稳定链路调优）
 PART_SIZE = 5 * 1024 * 1024      # 分块大小 5MB（COS 最小分块）
-MAX_THREAD = 5                   # 并发上传线程数（不宜过高，避免触发限流）
 SINGLE_FILE_RETRY = 3            # 单个文件失败后的整体重试次数
 RETRY_INTERVAL = 5               # 重试间隔（秒）
 
@@ -83,7 +82,6 @@ def upload_one(client, bucket, local_path, cos_key):
                 Key=cos_key,
                 LocalFilePath=local_path,
                 PartSize=PART_SIZE,
-                MAXTHREAD=MAX_THREAD,
                 EnableMD5=True,
             )
             logger.info(f'  ✓ 上传成功')
