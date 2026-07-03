@@ -36,8 +36,13 @@ from qcloud_cos import CosConfig, CosS3Client
 from qcloud_cos.cos_exception import CosClientError, CosServiceError
 
 # ---- 上传策略参数（针对跨洲不稳定链路调优）----
-PART_SIZE = 5          # 分块大小 MB（COS 最小分块，跨洲单块越小超时概率越低）
-MAX_THREAD = 5         # 并发上传线程数（不宜过高，避免触发限流）
+# 实测跨洲链路（GitHub Actions 美国节点 → 腾讯云广州）有效速率约 30~50 KB/s，
+# 因此用「大分块 + 低并发 + 长 timeout」策略：
+#   - 分块加大：减少分块数与协调往返，单块一次性吃满带宽
+#   - 并发降低：避免 5 个连接互相抢占本就有限的跨洲带宽
+#   - timeout 拉长：给单块足够时间写完（详见 build_client 注释）
+PART_SIZE = 8          # 分块大小 MB（5→8：减少分块数；7~8MB 文件可单块完成）
+MAX_THREAD = 2         # 并发上传线程数（5→2：跨洲带宽小，降并发避免互相拖慢）
 MAX_RETRY = 6          # 单文件最大重试次数（带指数退避）
 BASE_INTERVAL = 5      # 首次重试间隔（秒），后续指数退避：5, 10, 20, 40, 80
 SMALL_FILE_THRESHOLD = 1024 * 1024  # ≤1MB 用简单上传（put_object），无需分块
@@ -57,13 +62,21 @@ def build_client():
         logger.error('缺少环境变量：COS_SECRET_ID / COS_SECRET_KEY / COS_BUCKET')
         sys.exit(1)
 
+    # ⚠️ Timeout 必须够大，且不能像之前那样设 60s：
+    #   cos-python-sdk-v5 的 send_request 逻辑是「一旦用户设置了 _timeout，
+    #   就用它覆盖所有请求的默认 timeout」——包括原本默认 1200s 的
+    #   complete-multipart，以及 upload_part 的数据 PUT。
+    #   跨洲慢链路（~30-50KB/s）写完一个 8MB 分块需 3~4 分钟，
+    #   Timeout=60 会让单块 PUT 在写完前就被强制中断 → write operation timed out。
+    #   600s 对 part 写入够用，对秒级的 complete/put_object 也无副作用。
+    #
     # 普通地域域名（全球加速已关闭），跨洲上传靠分块 + 重试兜底
     config = CosConfig(
         Region=region,
         SecretId=secret_id,
         SecretKey=secret_key,
         Scheme='https',
-        Timeout=60,
+        Timeout=600,
     )
     return CosS3Client(config), bucket
 
