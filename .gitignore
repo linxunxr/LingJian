@@ -17,3 +17,4 @@ src-tauri/gen/
 .tauri_signing_key
 *.pem
 .env
+.playwright-mcp/
