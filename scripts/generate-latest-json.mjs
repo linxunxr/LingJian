@@ -27,8 +27,8 @@ import { exit } from 'node:process'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const CHANGELOG_PATH = resolve(__dirname, '..', 'CHANGELOG.md')
-// 使用全球加速域名（CI 跨洲上传 + 用户下载均走加速接入点）
-const COS_BASE = 'https://lingjian-releases-1433733625.cos.accelerate.myqcloud.com'
+// COS 访问域名（普通地域域名，全球加速已关闭）
+const COS_BASE = 'https://lingjian-releases-1433733625.cos.ap-guangzhou.myqcloud.com'
 
 const distDir = process.argv[2]
 const version = process.argv[3]
