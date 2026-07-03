@@ -129,7 +129,8 @@ for (const sigFile of sigFiles) {
   const signature = readFileSync(join(distDir, sigFile), 'utf-8').trim()
   platforms[platform] = {
     signature,
-    url: `${COS_BASE}/${assetName}`,
+    // 版本分目录：产物按版本归档到 /v0.1.x/ 下，避免所有版本混在根目录
+    url: `${COS_BASE}/${normalizedVersion}/${assetName}`,
   }
   console.log(`✓ ${platform} ← ${assetName}`)
   used++

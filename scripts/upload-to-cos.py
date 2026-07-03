@@ -10,13 +10,22 @@
   - 失败文件整体重试（最多 3 次）
 
 用法：
-  python scripts/upload-to-cos.py <dist-dir>
+  python scripts/upload-to-cos.py <dist-dir> <version>
+
+参数：
+  <dist-dir>  gh release download 的产物目录（含安装包、.sig、latest.json）
+  <version>   版本号（如 v0.1.1），安装包上传到 /<version>/ 子目录
 
 环境变量（由 GitHub Secrets 注入）：
   COS_SECRET_ID     腾讯云 SecretId
   COS_SECRET_KEY    腾讯云 SecretKey
   COS_BUCKET        存储桶名（如 lingjian-releases-1433733625）
   COS_REGION        地域（如 ap-guangzhou）
+
+目录结构：
+  /latest.json              ← 永远根目录（Tauri updater endpoint 固定）
+  /<version>/xxx.exe        ← 安装包按版本归档
+  /<version>/xxx.exe.sig
 """
 import os
 import sys
@@ -97,29 +106,40 @@ def upload_one(client, bucket, local_path, cos_key):
 
 
 def main():
-    if len(sys.argv) < 2:
-        print(f'用法: {sys.argv[0]} <dist-dir>', file=sys.stderr)
+    if len(sys.argv) < 3:
+        print(f'用法: {sys.argv[0]} <dist-dir> <version>', file=sys.stderr)
         sys.exit(1)
 
     dist_dir = sys.argv[1]
+    version = sys.argv[2].lstrip('/')
     if not os.path.isdir(dist_dir):
         logger.error(f'目录不存在: {dist_dir}')
+        sys.exit(1)
+    if not version:
+        logger.error('版本号不能为空')
         sys.exit(1)
 
     client, bucket = build_client()
 
-    # 收集待上传文件（跳过目录、空文件）
+    # 收集待上传文件，按规则分配 COS 路径：
+    #   latest.json → 根目录（Tauri updater endpoint 固定）
+    #   其他产物   → /<version>/ 子目录（按版本归档，避免根目录混乱）
     files = []
     for name in sorted(os.listdir(dist_dir)):
         path = os.path.join(dist_dir, name)
-        if os.path.isfile(path) and os.path.getsize(path) > 0:
-            files.append((path, '/' + name))
+        if not os.path.isfile(path) or os.path.getsize(path) == 0:
+            continue
+        if name == 'latest.json':
+            cos_key = '/' + name
+        else:
+            cos_key = f'/{version}/{name}'
+        files.append((path, cos_key))
 
     if not files:
         logger.error(f'目录中无可上传文件: {dist_dir}')
         sys.exit(1)
 
-    logger.info(f'共 {len(files)} 个文件待上传')
+    logger.info(f'共 {len(files)} 个文件待上传（版本目录: /{version}/）')
     failed = []
     for local_path, cos_key in files:
         ok = upload_one(client, bucket, local_path, cos_key)

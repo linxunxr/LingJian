@@ -103,4 +103,5 @@ jobs:
           COS_REGION: ap-guangzhou
         run: |
           # 用官方 SDK 上传（分块 + 断点续传 + 重试，针对跨洲链路加固）
-          python scripts/upload-to-cos.py dist
+          # 产物按版本归档到 /<version>/ 子目录，latest.json 留根目录
+          python scripts/upload-to-cos.py dist "${{ github.ref_name }}"
