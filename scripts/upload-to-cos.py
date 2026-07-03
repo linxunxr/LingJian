@@ -47,6 +47,13 @@ MAX_RETRY = 6          # 单文件最大重试次数（带指数退避）
 BASE_INTERVAL = 5      # 首次重试间隔（秒），后续指数退避：5, 10, 20, 40, 80
 SMALL_FILE_THRESHOLD = 1024 * 1024  # ≤1MB 用简单上传（put_object），无需分块
 
+# 普通域名连续失败 N 次后，自动切换到全球加速域名（cos.accelerate.myqcloud.com）。
+# 全球加速走腾讯内部优化路由，对跨洲上传（美国→广州）非常有效，但会产生少量加速费用，
+# 因此只在确认是持续性慢链路（而非瞬时抖动）后才启用：
+#   - 实测瞬时抖动（如 dmg 案例）在第 2 次普通续传就能成功 → 不会误触发加速
+#   - 持续性慢链路（如 AppImage 连续失败）能及时换路，避免后续无效重试
+ACCELERATE_THRESHOLD = 3
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger('upload-to-cos')
 
@@ -85,6 +92,33 @@ def build_client():
         Timeout=600,
     )
     return CosS3Client(config), bucket
+
+
+def build_accelerated_client(secret_id, secret_key):
+    """
+    构造走全球加速域名的客户端。
+
+    普通域名连续失败 ACCELERATE_THRESHOLD 次后调用，切换到腾讯内部优化路由
+    （cos.accelerate.myqcloud.com），对跨洲链路（美国→广州）尤其有效。
+
+    ⚠️ 前置条件：需先在腾讯云 COS 控制台为存储桶开启「全球加速」
+       （存储桶 → 域名与传输管理 → 全球加速域名 → 开启，约 15 分钟生效）。
+       若未开启，加速请求会返回错误，此时不影响主流程——异常会被 upload_one
+       的重试逻辑捕获，最终回退到普通域名或判定失败。
+
+    SDK 的 format_endpoint 逻辑：传 Endpoint 时直接使用，不再用 Region 拼域名，
+    因此这里不传 Region，仅通过 Endpoint 指定加速域名。最终请求 URL 形如：
+      https://<bucket-appid>.cos.accelerate.myqcloud.com/<key>
+    """
+    config = CosConfig(
+        Appid=None,
+        SecretId=secret_id,
+        SecretKey=secret_key,
+        Scheme='https',
+        Timeout=600,
+        Endpoint='cos.accelerate.myqcloud.com',
+    )
+    return CosS3Client(config)
 
 
 def abort_residual_multipart(client, bucket, cos_key):
@@ -162,16 +196,18 @@ def upload_large_file(client, bucket, local_path, cos_key):
     logger.info(f'  ✓ {filename} 上传成功（{size_mb:.1f}MB，分块 {PART_SIZE}MB）')
 
 
-def upload_one(client, bucket, local_path, cos_key, file_idx=None):
+def upload_one(client, bucket, local_path, cos_key, file_idx=None, accelerated_client=None):
     """
-    上传单个文件，带指数退避重试 + 碎片清理。
+    上传单个文件，带指数退避重试 + 碎片清理 + 自动切换加速域名。
 
     重试策略：
     - 小文件：put_object 失败直接重试（无碎片问题）
     - 大文件：upload_file 失败 → abort 残留碎片 → 退避等待 → 重试
     - 间隔指数退避：5s, 10s, 20s, 40s, 80s（避开网络抖动窗口）
+    - 普通域名连续失败 ACCELERATE_THRESHOLD 次后，改用全球加速域名客户端重试
 
     :param file_idx: (序号, 总数) 元组，用于日志显示 [i/N] 文件进度
+    :param accelerated_client: 全球加速域名客户端（None 表示不启用加速降级）
     """
     size = os.path.getsize(local_path)
     filename = os.path.basename(local_path)
@@ -180,21 +216,32 @@ def upload_one(client, bucket, local_path, cos_key, file_idx=None):
     seq = f'[{file_idx[0]}/{file_idx[1]}] ' if file_idx else ''
 
     for attempt in range(1, MAX_RETRY + 1):
+        # 第 1~ACCELERATE_THRESHOLD 次走普通域名；之后改走全球加速域名。
+        # 切换的那一刻打一条醒目提示，方便 CI 日志追溯加速触发情况。
+        use_accel = accelerated_client is not None and attempt > ACCELERATE_THRESHOLD
+        active_client = accelerated_client if use_accel else client
+        if use_accel and attempt == ACCELERATE_THRESHOLD + 1:
+            logger.warning(f'  ⚡ 普通域名连续失败 {ACCELERATE_THRESHOLD} 次，切换全球加速域名重试')
+
         try:
-            # 文件序号 [i/N] 始终显示；attempt==1 是首次尝试不标重试，重试才标「重试 N/M」
-            retry_tag = '' if attempt == 1 else f'[重试 {attempt}/{MAX_RETRY}] '
-            logger.info(f'{seq}{retry_tag}{filename} → {cos_key}')
+            # 拼装日志前缀：[i/N] 文件序号 + [重试 N/M]（首次不标）+ [加速]（仅加速时）
+            prefix = seq
+            if attempt > 1:
+                prefix += f'[重试 {attempt}/{MAX_RETRY}] '
+            if use_accel:
+                prefix += '[加速] '
+            logger.info(f'{prefix}{filename} → {cos_key}')
             if is_small:
-                upload_small_file(client, bucket, local_path, cos_key)
+                upload_small_file(active_client, bucket, local_path, cos_key)
             else:
-                upload_large_file(client, bucket, local_path, cos_key)
+                upload_large_file(active_client, bucket, local_path, cos_key)
             return True
 
         except (CosClientError, CosServiceError) as e:
             last_err = e
             # 大文件失败后清理 COS 残留碎片（小文件无此问题）
             if not is_small:
-                abort_residual_multipart(client, bucket, cos_key)
+                abort_residual_multipart(active_client, bucket, cos_key)
 
             if attempt < MAX_RETRY:
                 interval = BASE_INTERVAL * (2 ** (attempt - 1))
@@ -230,6 +277,11 @@ def main():
 
     client, bucket = build_client()
 
+    # 预构造全球加速域名客户端（仅普通域名连续失败时启用，故惰性使用）
+    secret_id = os.environ.get('COS_SECRET_ID')
+    secret_key = os.environ.get('COS_SECRET_KEY')
+    accelerated_client = build_accelerated_client(secret_id, secret_key)
+
     # 收集待上传文件，按规则分配 COS 路径：
     #   latest.json → 根目录（Tauri updater endpoint 固定）
     #   其他产物   → /<version>/ 子目录（按版本归档，避免根目录混乱）
@@ -252,7 +304,11 @@ def main():
     failed = []
     total = len(files)
     for idx, (local_path, cos_key) in enumerate(files, start=1):
-        ok = upload_one(client, bucket, local_path, cos_key, file_idx=(idx, total))
+        ok = upload_one(
+            client, bucket, local_path, cos_key,
+            file_idx=(idx, total),
+            accelerated_client=accelerated_client,
+        )
         if not ok:
             failed.append(os.path.basename(local_path))
 
