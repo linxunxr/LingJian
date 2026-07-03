@@ -2,12 +2,13 @@
 """
 上传 Release 产物到腾讯云 COS（国内加速分发）。
 
-替代 coscmd：使用官方 cos-python-sdk-v5，针对跨洲链路（GitHub Actions 美国节点
-→ 腾讯云广州区）做以下加固：
-  - 大文件自动分块上传（MB 级阈值）
-  - 断点续传（失败块自动重试，不重传已完成块）
-  - 单块超时 + 全局重试次数控制
-  - 失败文件整体重试（最多 3 次）
+使用官方 cos-python-sdk-v5，针对跨洲链路（GitHub Actions 美国节点 → 腾讯云广州区）
+网络波动场景做多层加固：
+
+  ① SDK 内置分块级重试：upload_file 自动分块，单块失败 SDK 内部重试
+  ② 外层文件级重试：整文件失败后重试，带指数退避避开网络抖动窗口
+  ③ 碎片清理：失败后 abort COS 上残留的 multipart upload（避免占存储 + 计费）
+  ④ 进度可见：progress_callback 输出每个文件的上传百分比到 CI 日志
 
 用法：
   python scripts/upload-to-cos.py <dist-dir> <version>
@@ -32,13 +33,15 @@ import sys
 import time
 import logging
 from qcloud_cos import CosConfig, CosS3Client
+from qcloud_cos.cos_exception import CosClientError, CosServiceError
 
-# 上传策略参数（针对跨洲不稳定链路调优）
-PART_SIZE = 5 * 1024 * 1024      # 分块大小 5MB（COS 最小分块）
-SINGLE_FILE_RETRY = 3            # 单个文件失败后的整体重试次数
-RETRY_INTERVAL = 5               # 重试间隔（秒）
+# ---- 上传策略参数（针对跨洲不稳定链路调优）----
+PART_SIZE = 5          # 分块大小 MB（COS 最小分块，跨洲单块越小超时概率越低）
+MAX_THREAD = 5         # 并发上传线程数（不宜过高，避免触发限流）
+MAX_RETRY = 6          # 单文件最大重试次数（带指数退避）
+BASE_INTERVAL = 5      # 首次重试间隔（秒），后续指数退避：5, 10, 20, 40, 80
+SMALL_FILE_THRESHOLD = 1024 * 1024  # ≤1MB 用简单上传（put_object），无需分块
 
-# SDK 内部日志（便于排查分块上传失败）
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger('upload-to-cos')
 
@@ -54,7 +57,6 @@ def build_client():
         logger.error('缺少环境变量：COS_SECRET_ID / COS_SECRET_KEY / COS_BUCKET')
         sys.exit(1)
 
-    # scheme + 超时：连接 60s（跨洲握手慢），读写 60s
     # 普通地域域名（全球加速已关闭），跨洲上传靠分块 + 重试兜底
     config = CosConfig(
         Region=region,
@@ -66,41 +68,125 @@ def build_client():
     return CosS3Client(config), bucket
 
 
+def abort_residual_multipart(client, bucket, cos_key):
+    """
+    清理 COS 上某 Key 的残留分块上传。
+
+    upload_file 失败后，COS 端可能残留 initialized multipart upload（碎片），
+    占用存储并产生费用。重试前先 abort 掉所有进行中的 upload。
+    """
+    try:
+        resp = client.list_multipart_uploads(Bucket=bucket, Prefix=cos_key)
+        uploads = resp.get('Upload', [])
+        for u in uploads:
+            uid = u.get('UploadId')
+            ukey = u.get('Key')
+            if uid and ukey == cos_key.lstrip('/'):
+                client.abort_multipart_upload(Bucket=bucket, Key=ukey, UploadId=uid)
+                logger.info(f'  ↻ 清理残留分块上传 UploadId={uid[:12]}...')
+    except Exception as e:
+        # 清理失败不影响主流程（最多留点碎片，COS 生命周期规则可兜底）
+        logger.debug(f'  清理碎片跳过: {e}')
+
+
+def make_progress_callback(filename, total_bytes_holder):
+    """构造进度回调，输出百分比到 CI 日志（每 20% 打一行，避免刷屏）。"""
+    state = {'last_pct': -1}
+
+    def cb(consumed, total):
+        total_bytes_holder['size'] = total
+        if total <= 0:
+            return
+        pct = int(100 * consumed / total)
+        # 每 20% 打印一次（0/20/40/60/80/100）
+        bucket = (pct // 20) * 20
+        if bucket > state['last_pct']:
+            state['last_pct'] = bucket
+            logger.info(f'    {filename} 上传进度: {pct}%')
+
+    return cb
+
+
+def upload_small_file(client, bucket, local_path, cos_key):
+    """小文件（≤1MB）用简单上传，一次 HTTP 完成。"""
+    filename = os.path.basename(local_path)
+    client.put_object(
+        Bucket=bucket,
+        Key=cos_key,
+        Body=open(local_path, 'rb').read(),
+        EnableMD5=True,
+    )
+    logger.info(f'  ✓ {filename} 上传成功（简单上传）')
+
+
+def upload_large_file(client, bucket, local_path, cos_key):
+    """
+    大文件用分块上传（SDK upload_file），带进度回调。
+
+    SDK 内部自动：分块 → 逐块上传 → 失败块重试 → 合并。
+    外层调用方负责失败后的整体重试与碎片清理。
+    """
+    filename = os.path.basename(local_path)
+    size_mb = os.path.getsize(local_path) / (1024 * 1024)
+    total_holder = {'size': 0}
+    progress_cb = make_progress_callback(filename, total_holder)
+
+    client.upload_file(
+        Bucket=bucket,
+        Key=cos_key,
+        LocalFilePath=local_path,
+        PartSize=PART_SIZE,
+        MAXThread=MAX_THREAD,
+        EnableMD5=True,
+        progress_callback=progress_cb,
+    )
+    logger.info(f'  ✓ {filename} 上传成功（{size_mb:.1f}MB，分块 {PART_SIZE}MB）')
+
+
 def upload_one(client, bucket, local_path, cos_key):
     """
-    上传单个文件，带断点续传 + 重试。
+    上传单个文件，带指数退避重试 + 碎片清理。
 
-    - 文件 <= 10MB：直接 put_object（简单上传）
-    - 文件 > 10MB：分块上传（自动断点续传）
-    每次失败后整体重试，最多 SINGLE_FILE_RETRY 次。
+    重试策略：
+    - 小文件：put_object 失败直接重试（无碎片问题）
+    - 大文件：upload_file 失败 → abort 残留碎片 → 退避等待 → 重试
+    - 间隔指数退避：5s, 10s, 20s, 40s, 80s（避开网络抖动窗口）
     """
     size = os.path.getsize(local_path)
-    size_mb = size / (1024 * 1024)
+    filename = os.path.basename(local_path)
+    is_small = size <= SMALL_FILE_THRESHOLD
     last_err = None
 
-    for attempt in range(1, SINGLE_FILE_RETRY + 1):
+    for attempt in range(1, MAX_RETRY + 1):
         try:
-            logger.info(f'[{attempt}/{SINGLE_FILE_RETRY}] {os.path.basename(local_path)} '
-                        f'({size_mb:.1f}MB) → cos://{bucket}/{cos_key}')
-
-            # 大文件走分块上传（CI 环境无持久断点续传上下文，但分块本身
-            # 能降低单次请求时长，超时概率远低于整文件上传）
-            client.upload_file(
-                Bucket=bucket,
-                Key=cos_key,
-                LocalFilePath=local_path,
-                PartSize=PART_SIZE,
-                EnableMD5=True,
-            )
-            logger.info(f'  ✓ 上传成功')
+            logger.info(f'[{attempt}/{MAX_RETRY}] {filename} → {cos_key}')
+            if is_small:
+                upload_small_file(client, bucket, local_path, cos_key)
+            else:
+                upload_large_file(client, bucket, local_path, cos_key)
             return True
+
+        except (CosClientError, CosServiceError) as e:
+            last_err = e
+            # 大文件失败后清理 COS 残留碎片（小文件无此问题）
+            if not is_small:
+                abort_residual_multipart(client, bucket, cos_key)
+
+            if attempt < MAX_RETRY:
+                interval = BASE_INTERVAL * (2 ** (attempt - 1))
+                logger.warning(f'  ✗ 第 {attempt} 次失败: {e}')
+                logger.info(f'  ⏳ {interval}s 后重试（指数退避）...')
+                time.sleep(interval)
+            else:
+                logger.error(f'  ✗ {filename} 重试 {MAX_RETRY} 次后仍失败: {e}')
+
         except Exception as e:
             last_err = e
-            logger.warning(f'  ✗ 第 {attempt} 次失败: {e}')
-            if attempt < SINGLE_FILE_RETRY:
-                time.sleep(RETRY_INTERVAL)
+            if attempt < MAX_RETRY:
+                interval = BASE_INTERVAL * (2 ** (attempt - 1))
+                logger.warning(f'  ✗ 第 {attempt} 次异常: {e}，{interval}s 后重试...')
+                time.sleep(interval)
 
-    logger.error(f'  ✗✗ {os.path.basename(local_path)} 重试 {SINGLE_FILE_RETRY} 次后仍失败')
     return False
 
 
