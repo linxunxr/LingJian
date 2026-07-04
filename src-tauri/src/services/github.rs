@@ -19,6 +19,8 @@ pub struct ParsedIssue {
 ///
 /// 注意：owner/repo/title 由 SCF `/issue/:number` 端点返回；
 /// `report_id` 是后续下载日志的关键字段。
+/// `state` / `labels` 用于分析详情页显示真实状态（需 SCF 端点支持，
+/// 旧版 SCF 不返回时走 serde default 降级）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IssueInfo {
@@ -28,6 +30,12 @@ pub struct IssueInfo {
     /// 从 Issue body 解析出的上报编号
     pub report_id: String,
     pub title: String,
+    /// Issue 状态：open / closed（SCF 旧版可能不返回，默认空串）
+    #[serde(default)]
+    pub state: String,
+    /// 当前标签列表（SCF 旧版可能不返回，默认空数组）
+    #[serde(default)]
+    pub labels: Vec<String>,
     /// 上报环境信息（增强项，由 SCF 从 Issue body 环境表格提取，可选）
     #[serde(default)]
     pub app_version: Option<String>,
