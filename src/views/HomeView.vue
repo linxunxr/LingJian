@@ -28,7 +28,8 @@ const stageText: Record<string, string> = {
 
 async function loadRecent() {
   try {
-    recentReports.value = await invoke<Report[]>('list_recent_reports', { limit: 10 })
+    const result = await invoke<Report[]>('list_recent_reports', { limit: 10 })
+    recentReports.value = Array.isArray(result) ? result : []
   } catch {
     recentReports.value = []
   }
@@ -87,7 +88,7 @@ onMounted(async () => {
           <span class="report-issue">
             {{ report.issueNumber ? `#${report.issueNumber}` : '—' }}
           </span>
-          <span class="report-title">{{ report.issueTitle ?? report.reportId.slice(0, 8) }}</span>
+          <span class="report-title">{{ report.issueTitle ?? (report.reportId ? report.reportId.slice(0, 8) : '—') }}</span>
           <span class="report-count">{{ report.logCount }} 条</span>
           <span class="report-time">{{ formatTime(report.downloadedAt) }}</span>
         </li>

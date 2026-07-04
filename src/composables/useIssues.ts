@@ -68,9 +68,10 @@ export async function loadIssues(): Promise<void> {
       scfUrl: settings.scfUrl,
       apiKey: settings.apiKey,
     })
-    state.issues = result.issues
-    state.page = result.page
-    state.hasMore = result.hasMore
+    // 防御：SCF 返回异常结构时兜底为空数组，避免 v-for 遍历 undefined 崩溃
+    state.issues = Array.isArray(result.issues) ? result.issues : []
+    state.page = result.page ?? 1
+    state.hasMore = !!result.hasMore
     state.loaded = true
   } catch (e) {
     state.error = typeof e === 'string' ? e : String(e)
@@ -101,9 +102,11 @@ export async function loadMore(): Promise<void> {
       scfUrl: settings.scfUrl,
       apiKey: settings.apiKey,
     })
-    state.issues.push(...result.issues)
-    state.page = result.page
-    state.hasMore = result.hasMore
+    if (Array.isArray(result.issues)) {
+      state.issues.push(...result.issues)
+    }
+    state.page = result.page ?? nextPage
+    state.hasMore = !!result.hasMore
   } catch (e) {
     state.error = typeof e === 'string' ? e : String(e)
   } finally {
