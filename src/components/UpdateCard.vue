@@ -1,7 +1,19 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+import { marked } from 'marked'
 import { useUpdater } from '@/composables/useUpdater'
 
+// GFM 语法；breaks 让单换行转 <br>，CHANGELOG 换行更自然渲染
+marked.setOptions({ gfm: true, breaks: true })
+
 const { state, checkForUpdate, downloadAndInstall } = useUpdater()
+
+// 把更新说明（Markdown 原文，来自 CHANGELOG 经 latest.json notes 字段透传）
+// 解析成 HTML 渲染。内容来自项目自有 CHANGELOG（CI 提取、可信来源），无需 XSS 清洗。
+const renderedBody = computed(() => {
+  if (!state.body) return ''
+  return marked.parse(state.body, { async: false }) as string
+})
 
 const statusText: Record<string, string> = {
   idle: '',
@@ -49,9 +61,7 @@ async function onInstall() {
         <span class="new-version-value">v{{ state.version }}</span>
         <span v-if="state.date" class="new-date">{{ state.date.slice(0, 10) }}</span>
       </div>
-      <div v-if="state.body" class="update-body">
-        <pre>{{ state.body }}</pre>
-      </div>
+      <div v-if="state.body" class="update-body markdown-body" v-html="renderedBody" />
       <button class="install-btn" @click="onInstall">下载并安装</button>
     </div>
 
@@ -175,22 +185,80 @@ async function onInstall() {
 
 .update-body {
   margin: 0.5rem 0;
-  padding: 0.625rem;
+  padding: 0.75rem 0.875rem;
   background-color: var(--color-bg);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
-  max-height: 160px;
+  max-height: 240px;
   overflow-y: auto;
 }
 
-.update-body pre {
-  margin: 0;
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  color: var(--color-text);
-  white-space: pre-wrap;
-  word-break: break-all;
+/* 更新说明按 Markdown 渲染后的排版（贴合深色主题，全部用项目 CSS 变量）。
+   内容来自 CHANGELOG：主要用到 h3（新增/优化/修复）、ul/li、strong、code。 */
+.markdown-body {
+  font-size: 0.75rem;
   line-height: 1.6;
+  color: var(--color-text);
+}
+
+.markdown-body > *:first-child {
+  margin-top: 0;
+}
+
+.markdown-body > *:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-body h3 {
+  margin: 0.625rem 0 0.375rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--color-text-bright);
+}
+
+/* 同级第一个 h3 不需要顶起间距（容器已有 padding） */
+.markdown-body > h3:first-child {
+  margin-top: 0;
+}
+
+.markdown-body p {
+  margin: 0.375rem 0;
+}
+
+.markdown-body ul {
+  margin: 0.25rem 0;
+  padding-left: 1.25rem;
+}
+
+.markdown-body li {
+  margin: 0.2rem 0;
+}
+
+.markdown-body strong {
+  color: var(--color-text-bright);
+  font-weight: 600;
+}
+
+.markdown-body a {
+  color: var(--color-primary);
+}
+
+.markdown-body a:hover {
+  color: var(--color-primary-hover);
+}
+
+.markdown-body code {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 0.1rem 0.3rem;
+  background-color: var(--color-surface-alt);
+  border-radius: 3px;
+}
+
+.markdown-body hr {
+  margin: 0.625rem 0;
+  border: none;
+  border-top: 1px solid var(--color-border);
 }
 
 .install-btn {
