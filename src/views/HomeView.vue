@@ -30,8 +30,10 @@ const stageText: Record<string, string> = {
 async function loadRecent() {
   try {
     const result = await invoke<Report[]>('list_recent_reports', { limit: 10 })
+    console.log('[loadRecent] 返回', Array.isArray(result) ? result.length : '非数组', '条记录')
     recentReports.value = Array.isArray(result) ? result : []
-  } catch {
+  } catch (e) {
+    console.error('[loadRecent] 调用失败:', e)
     recentReports.value = []
   }
 }
@@ -67,7 +69,7 @@ onActivated(() => {
 <template>
   <div class="home">
     <section class="hero">
-      <h2 class="hero-title">灵鉴 <span class="version">v0.1.6</span></h2>
+      <h2 class="hero-title">灵鉴 <span class="version">v0.1.7</span></h2>
       <p class="hero-desc">Path of Idle Immortals 日志分析工具</p>
     </section>
 
