@@ -89,7 +89,7 @@ onMounted(loadSettings)
 
     <section class="card about">
       <h3 class="card-title">关于</h3>
-      <p>灵鉴 LingJian v0.1.1</p>
+      <p>灵鉴 LingJian v0.1.10</p>
       <p class="muted">Path of Idle Immortals 日志分析工具</p>
     </section>
 
