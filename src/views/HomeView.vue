@@ -98,7 +98,7 @@ onActivated(() => {
           v-for="report in recentReports"
           :key="report.reportId"
           class="report-item"
-          @click="router.push({ name: 'analyze', query: { id: report.reportId } })"
+          @click="router.push({ name: 'analyze', query: { id: report.reportId, issue: report.issueNumber } })"
         >
           <span class="report-issue">
             {{ report.issueNumber ? `#${report.issueNumber}` : '—' }}
