@@ -10,9 +10,10 @@ import Timeline from '@/components/Timeline.vue'
 import ErrorAggregates from '@/components/ErrorAggregates.vue'
 import { useAnalysis } from '@/composables/useAnalysis'
 import { useIssues } from '@/composables/useIssues'
+import { settings } from '@/composables/useSettings'
 import { exportReport, type ExportFormat } from '@/composables/useExport'
 import { formatBytes } from '@/utils/format'
-import type { AnalysisResult, LogEntry, Report } from '@/types'
+import type { AnalysisResult, IssueInfo, LogEntry, Report } from '@/types'
 
 const route = useRoute()
 const router = useRouter()
@@ -38,8 +39,15 @@ const issueNumber = computed(() => {
   return Number.isFinite(n) && n > 0 ? n : null
 })
 
-/** 本地维护的 issue 状态：首次操作前为 null（未知），操作后按返回值更新 */
-const currentIssueState = ref<string | null>(null)
+/** 当前 issue 的真实信息（进入详情页时调 fetch_issue_info 拿到，含 state/labels） */
+const issueInfo = ref<IssueInfo | null>(null)
+
+/** 当前 issue 状态：优先用 fetch_issue_info 返回的真实值，未知时默认 open */
+const currentIssueState = computed(() => issueInfo.value?.state || 'open')
+
+/** 当前 issue 标签：fetch_issue_info 返回的真实值 */
+const currentLabels = computed<string[]>(() => issueInfo.value?.labels ?? [])
+
 const openMenu = ref(false)
 
 /** 评论对话框 */
@@ -50,14 +58,32 @@ const commentText = ref('')
 const labelTarget = ref(false)
 const labelDraft = ref<string[]>([])
 
+/** 加载 issue 真实信息（state/labels），用于操作按钮文案与标签回填 */
+async function loadIssueInfo(number: number) {
+  // 配置不完整时静默跳过（与 loadIssues 一致的降级策略）
+  if (!settings.scfUrl.trim() || !settings.apiKey.trim()) return
+  try {
+    issueInfo.value = await invoke<IssueInfo>('fetch_issue_info', {
+      number,
+      scfUrl: settings.scfUrl,
+      apiKey: settings.apiKey,
+    })
+  } catch (e) {
+    // 拉取失败不阻断分析（仅影响操作按钮文案，回退为默认 open）
+    console.warn('[loadIssueInfo] 失败:', e)
+    issueInfo.value = null
+  }
+}
+
 /** 关闭/重开 */
-async function onToggleState(number: number, issueState: string | null) {
+async function onToggleState(number: number) {
   openMenu.value = false
-  const action = issueState === 'closed' ? 'reopen' : 'close'
+  const action = currentIssueState.value === 'closed' ? 'reopen' : 'close'
   const ok = await actOnIssue(number, action)
-  // 操作成功后按 action 反推状态（close → closed；reopen → open），
-  // 不依赖后端返回 state（部分实现可能不回传）
-  if (ok) currentIssueState.value = action === 'close' ? 'closed' : 'open'
+  // 乐观更新本地 issueInfo.state（actOnIssue 也已更新首页列表项）
+  if (ok && issueInfo.value) {
+    issueInfo.value.state = action === 'close' ? 'closed' : 'open'
+  }
 }
 
 function openComment() {
@@ -78,7 +104,8 @@ async function submitComment() {
 function openLabels() {
   openMenu.value = false
   labelTarget.value = true
-  labelDraft.value = []
+  // 用 issue 真实标签初始化 draft（而非空数组，避免每次编辑丢失已有标签）
+  labelDraft.value = [...currentLabels.value]
 }
 
 function togglePresetLabel(label: string) {
@@ -91,6 +118,8 @@ async function submitLabels() {
   if (!issueNumber.value) return
   const ok = await actOnIssue(issueNumber.value, 'setLabels', { labels: labelDraft.value })
   if (ok) {
+    // 乐观更新本地 issueInfo.labels
+    if (issueInfo.value) issueInfo.value.labels = [...labelDraft.value]
     labelTarget.value = false
     labelDraft.value = []
   }
@@ -133,9 +162,15 @@ watch(
     openMenu.value = false
     commentTarget.value = false
     labelTarget.value = false
-    currentIssueState.value = null
+    issueInfo.value = null
   },
 )
+
+/** issue 号变化时重新拉取 issue 真实信息 */
+watch(issueNumber, (n) => {
+  if (n) loadIssueInfo(n)
+  else issueInfo.value = null
+})
 
 /** 单独加载某 report 的分析（从首页最近列表点进来） */
 async function loadReport(reportId: string) {
@@ -180,6 +215,9 @@ onMounted(() => {
   if (id) {
     loadReport(id)
   }
+  if (issueNumber.value) {
+    loadIssueInfo(issueNumber.value)
+  }
   document.addEventListener('click', onDocClick)
 })
 
@@ -199,6 +237,9 @@ onUnmounted(() => {
         {{ state.download.logCount }} 条 · {{ formatBytes(state.download.fileSize) }}
       </span>
       <div class="issue-actions" v-if="issueNumber">
+        <span v-if="issueInfo" :class="['issue-badge', currentIssueState]">
+          {{ currentIssueState === 'closed' ? '已关闭' : '未处理' }}
+        </span>
         <button
           class="action-btn"
           :disabled="issuesState.actingNumber === issueNumber"
@@ -208,7 +249,7 @@ onUnmounted(() => {
           {{ issuesState.actingNumber === issueNumber ? '⋯' : '⋮' }} Issue
         </button>
         <div v-if="openMenu" class="action-menu" @click.stop>
-          <button class="menu-item" @click="onToggleState(issueNumber, currentIssueState)">
+          <button class="menu-item" @click="onToggleState(issueNumber)">
             {{ currentIssueState === 'closed' ? '↻ 重新打开' : '✓ 关闭 Issue' }}
           </button>
           <button class="menu-item" @click="openComment">💬 添加评论</button>
@@ -459,6 +500,25 @@ onUnmounted(() => {
   position: relative;
   display: flex;
   align-items: center;
+  gap: 0.375rem;
+}
+
+/* 状态徽章：进入详情页拉到真实状态后显示 */
+.issue-badge {
+  font-size: 0.7rem;
+  padding: 0.125rem 0.5rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+}
+
+.issue-badge.open {
+  color: var(--color-warning);
+  border-color: var(--color-warning);
+}
+
+.issue-badge.closed {
+  color: var(--color-success);
+  border-color: var(--color-success);
 }
 
 .action-btn {
