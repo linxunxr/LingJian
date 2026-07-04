@@ -18,3 +18,4 @@ src-tauri/gen/
 *.pem
 .env
 .playwright-mcp/
+__pycache__/

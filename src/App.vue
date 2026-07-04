@@ -78,7 +78,11 @@ async function closeOnboarding() {
       </nav>
     </header>
     <main class="app-main">
-      <RouterView />
+      <RouterView v-slot="{ Component }">
+        <keep-alive include="HomeView">
+          <component :is="Component" />
+        </keep-alive>
+      </RouterView>
     </main>
     <Onboarding v-if="showOnboarding" @done="closeOnboarding" @skip="closeOnboarding" />
   </div>

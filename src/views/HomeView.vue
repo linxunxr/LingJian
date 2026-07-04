@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onMounted, ref, computed } from 'vue'
+defineOptions({ name: 'HomeView' })
+import { onMounted, onActivated, ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { invoke } from '@tauri-apps/api/core'
 
@@ -43,11 +44,23 @@ async function onSubmit(input: string) {
   }
 }
 
+// keep-alive 首次挂载标记：onMounted 和 onActivated 都会在首次触发，
+// 用此标记跳过首次 onActivated 的重复加载
+let firstMount = true
+
 onMounted(async () => {
   await loadSettings()
   // settingsReady 已是 computed，loadSettings 更新全局 settings 后自动重算
   // 配置完整时自动拉取问题列表；不完整时 loadIssues 内部会静默跳过
   await Promise.all([loadRecent(), loadIssues()])
+  firstMount = false
+})
+
+// 从分析页等返回时（keep-alive 恢复），仅刷新"最近分析"列表
+// （可能刚完成新分析，需要更新列表），问题列表不重拉（已有数据）
+onActivated(() => {
+  if (firstMount) return // 首次由 onMounted 处理
+  loadRecent()
 })
 </script>
 
