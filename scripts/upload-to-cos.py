@@ -47,12 +47,13 @@ MAX_RETRY = 6          # 单文件最大重试次数（带指数退避）
 BASE_INTERVAL = 5      # 首次重试间隔（秒），后续指数退避：5, 10, 20, 40, 80
 SMALL_FILE_THRESHOLD = 1024 * 1024  # ≤1MB 用简单上传（put_object），无需分块
 
-# 普通域名连续失败 N 次后，自动切换到全球加速域名（cos.accelerate.myqcloud.com）。
-# 全球加速走腾讯内部优化路由，对跨洲上传（美国→广州）非常有效，但会产生少量加速费用，
-# 因此只在确认是持续性慢链路（而非瞬时抖动）后才启用：
-#   - 实测瞬时抖动（如 dmg 案例）在第 2 次普通续传就能成功 → 不会误触发加速
-#   - 持续性慢链路（如 AppImage 连续失败）能及时换路，避免后续无效重试
-ACCELERATE_THRESHOLD = 3
+# 普通域名失败 N 次后，自动切换到全球加速域名（cos.accelerate.myqcloud.com）。
+# 全球加速走腾讯内部优化路由，对跨洲上传（美国→广州）非常有效。
+# 已购买全球加速流量包，不再计较加速费用，故放宽触发条件——普通域名首次失败后
+# 立即切换加速域名，避免在持续慢链路上做无效重试：
+#   - 第 1 次仍走普通域名（保留一次机会排除瞬时抖动）
+#   - 一旦失败，第 2 次起即切加速，后续重试全部走优化路由
+ACCELERATE_THRESHOLD = 1
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger('upload-to-cos')
@@ -98,8 +99,9 @@ def build_accelerated_client(secret_id, secret_key):
     """
     构造走全球加速域名的客户端。
 
-    普通域名连续失败 ACCELERATE_THRESHOLD 次后调用，切换到腾讯内部优化路由
+    普通域名失败 ACCELERATE_THRESHOLD 次后调用，切换到腾讯内部优化路由
     （cos.accelerate.myqcloud.com），对跨洲链路（美国→广州）尤其有效。
+    已购买全球加速流量包，阈值放宽到 1，普通域名失败一次即切换。
 
     ⚠️ 前置条件：需先在腾讯云 COS 控制台为存储桶开启「全球加速」
        （存储桶 → 域名与传输管理 → 全球加速域名 → 开启，约 15 分钟生效）。
@@ -204,7 +206,7 @@ def upload_one(client, bucket, local_path, cos_key, file_idx=None, accelerated_c
     - 小文件：put_object 失败直接重试（无碎片问题）
     - 大文件：upload_file 失败 → abort 残留碎片 → 退避等待 → 重试
     - 间隔指数退避：5s, 10s, 20s, 40s, 80s（避开网络抖动窗口）
-    - 普通域名连续失败 ACCELERATE_THRESHOLD 次后，改用全球加速域名客户端重试
+    - 普通域名失败 ACCELERATE_THRESHOLD 次后，改用全球加速域名客户端重试
 
     :param file_idx: (序号, 总数) 元组，用于日志显示 [i/N] 文件进度
     :param accelerated_client: 全球加速域名客户端（None 表示不启用加速降级）
@@ -221,7 +223,7 @@ def upload_one(client, bucket, local_path, cos_key, file_idx=None, accelerated_c
         use_accel = accelerated_client is not None and attempt > ACCELERATE_THRESHOLD
         active_client = accelerated_client if use_accel else client
         if use_accel and attempt == ACCELERATE_THRESHOLD + 1:
-            logger.warning(f'  ⚡ 普通域名连续失败 {ACCELERATE_THRESHOLD} 次，切换全球加速域名重试')
+            logger.warning(f'  ⚡ 普通域名失败 {ACCELERATE_THRESHOLD} 次，切换全球加速域名重试')
 
         try:
             # 拼装日志前缀：[i/N] 文件序号 + [重试 N/M]（首次不标）+ [加速]（仅加速时）
@@ -277,7 +279,7 @@ def main():
 
     client, bucket = build_client()
 
-    # 预构造全球加速域名客户端（仅普通域名连续失败时启用，故惰性使用）
+    # 预构造全球加速域名客户端（普通域名失败 1 次即启用，提前构造避免运行时延迟）
     secret_id = os.environ.get('COS_SECRET_ID')
     secret_key = os.environ.get('COS_SECRET_KEY')
     accelerated_client = build_accelerated_client(secret_id, secret_key)
