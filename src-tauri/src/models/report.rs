@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// 一次日志上报记录
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Report {
     /// 上报唯一标识（UUID）
     pub report_id: String,

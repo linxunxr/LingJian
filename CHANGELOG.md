@@ -6,6 +6,11 @@
 
 ---
 
+## v0.1.8 - 2026-07-04
+
+### 修复
+- **最近分析列表显示空记录**：Report 结构体漏加 `#[serde(rename_all = "camelCase")]`，导致 JSON 字段为 snake_case（report_id），前端按 camelCase（reportId）读取全部为 undefined
+
 ## v0.1.7 - 2026-07-04
 
 ### 优化
