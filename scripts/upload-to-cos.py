@@ -36,8 +36,8 @@ from qcloud_cos import CosConfig, CosS3Client
 from qcloud_cos.cos_exception import CosClientError, CosServiceError
 
 # ---- 上传策略参数（针对跨洲不稳定链路调优）----
-# 实测跨洲链路（GitHub Actions 美国节点 → 腾讯云广州）有效速率约 30~50 KB/s，
-# 因此用「大分块 + 低并发 + 长 timeout」策略：
+# 默认走全球加速域名，加速走腾讯内部优化路由，明显缓解跨洲链路（GitHub Actions
+# 美国节点 → 腾讯云广州）的慢速问题。配合「大分块 + 低并发 + 长 timeout」策略：
 #   - 分块加大：减少分块数与协调往返，单块一次性吃满带宽
 #   - 并发降低：避免 5 个连接互相抢占本就有限的跨洲带宽
 #   - timeout 拉长：给单块足够时间写完（详见 build_client 注释）
@@ -47,13 +47,12 @@ MAX_RETRY = 6          # 单文件最大重试次数（带指数退避）
 BASE_INTERVAL = 5      # 首次重试间隔（秒），后续指数退避：5, 10, 20, 40, 80
 SMALL_FILE_THRESHOLD = 1024 * 1024  # ≤1MB 用简单上传（put_object），无需分块
 
-# 普通域名失败 N 次后，自动切换到全球加速域名（cos.accelerate.myqcloud.com）。
-# 全球加速走腾讯内部优化路由，对跨洲上传（美国→广州）非常有效。
-# 已购买全球加速流量包，不再计较加速费用，故放宽触发条件——普通域名首次失败后
-# 立即切换加速域名，避免在持续慢链路上做无效重试：
-#   - 第 1 次仍走普通域名（保留一次机会排除瞬时抖动）
-#   - 一旦失败，第 2 次起即切加速，后续重试全部走优化路由
-ACCELERATE_THRESHOLD = 1
+# 默认走全球加速域名（cos.accelerate.myqcloud.com），加速异常时回退普通地域域名。
+# 已购买全球加速流量包，加速走腾讯内部优化路由，对跨洲上传（美国→广州）效果显著，
+# 实测普通地域域名跨洲速率仅 30~50KB/s，加速后明显改善，故直接默认用加速：
+#   - 第 1 次起就走加速域名（不再先试普通域名浪费时间）
+#   - 加速连续失败 FALLBACK_THRESHOLD 次后，回退普通地域域名兜底（极少触发）
+FALLBACK_THRESHOLD = 3
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger('upload-to-cos')
@@ -66,11 +65,24 @@ logging.getLogger('qcloud_cos').setLevel(logging.WARNING)
 
 
 def build_client():
-    """构造 COS 客户端，超时参数针对跨洲链路放宽。"""
+    """
+    构造主 COS 客户端，默认走全球加速域名。
+
+    已购买全球加速流量包，加速走腾讯内部优化路由，对跨洲上传（美国→广州）效果显著
+    （普通地域域名跨洲仅 30~50KB/s），故默认直接用加速域名，不再先试普通域名。
+
+    ⚠️ 前置条件：需先在腾讯云 COS 控制台为存储桶开启「全球加速」
+       （存储桶 → 域名与传输管理 → 全球加速域名 → 开启，约 15 分钟生效）。
+       若未开启，加速请求会返回错误，此时由 upload_one 的重试逻辑捕获，
+       回退到普通地域域名兜底（build_plain_client 提供）。
+
+    SDK 的 format_endpoint 逻辑：传 Endpoint 时直接使用，不再用 Region 拼域名，
+    因此这里不传 Region，仅通过 Endpoint 指定加速域名。最终请求 URL 形如：
+      https://<bucket-appid>.cos.accelerate.myqcloud.com/<key>
+    """
     secret_id = os.environ.get('COS_SECRET_ID')
     secret_key = os.environ.get('COS_SECRET_KEY')
     bucket = os.environ.get('COS_BUCKET')
-    region = os.environ.get('COS_REGION', 'ap-guangzhou')
 
     if not all([secret_id, secret_key, bucket]):
         logger.error('缺少环境变量：COS_SECRET_ID / COS_SECRET_KEY / COS_BUCKET')
@@ -83,35 +95,6 @@ def build_client():
     #   跨洲慢链路（~30-50KB/s）写完一个 8MB 分块需 3~4 分钟，
     #   Timeout=60 会让单块 PUT 在写完前就被强制中断 → write operation timed out。
     #   600s 对 part 写入够用，对秒级的 complete/put_object 也无副作用。
-    #
-    # 普通地域域名（全球加速已关闭），跨洲上传靠分块 + 重试兜底
-    config = CosConfig(
-        Region=region,
-        SecretId=secret_id,
-        SecretKey=secret_key,
-        Scheme='https',
-        Timeout=600,
-    )
-    return CosS3Client(config), bucket
-
-
-def build_accelerated_client(secret_id, secret_key):
-    """
-    构造走全球加速域名的客户端。
-
-    普通域名失败 ACCELERATE_THRESHOLD 次后调用，切换到腾讯内部优化路由
-    （cos.accelerate.myqcloud.com），对跨洲链路（美国→广州）尤其有效。
-    已购买全球加速流量包，阈值放宽到 1，普通域名失败一次即切换。
-
-    ⚠️ 前置条件：需先在腾讯云 COS 控制台为存储桶开启「全球加速」
-       （存储桶 → 域名与传输管理 → 全球加速域名 → 开启，约 15 分钟生效）。
-       若未开启，加速请求会返回错误，此时不影响主流程——异常会被 upload_one
-       的重试逻辑捕获，最终回退到普通域名或判定失败。
-
-    SDK 的 format_endpoint 逻辑：传 Endpoint 时直接使用，不再用 Region 拼域名，
-    因此这里不传 Region，仅通过 Endpoint 指定加速域名。最终请求 URL 形如：
-      https://<bucket-appid>.cos.accelerate.myqcloud.com/<key>
-    """
     config = CosConfig(
         Appid=None,
         SecretId=secret_id,
@@ -120,7 +103,29 @@ def build_accelerated_client(secret_id, secret_key):
         Timeout=600,
         Endpoint='cos.accelerate.myqcloud.com',
     )
-    return CosS3Client(config)
+    return CosS3Client(config), bucket
+
+
+def build_plain_client():
+    """
+    构造走普通地域域名的兜底客户端。
+
+    主客户端（加速域名）连续失败 FALLBACK_THRESHOLD 次后启用，作为兜底
+    避免加速域名整体故障时上传彻底失败。
+    """
+    secret_id = os.environ.get('COS_SECRET_ID')
+    secret_key = os.environ.get('COS_SECRET_KEY')
+    bucket = os.environ.get('COS_BUCKET')
+    region = os.environ.get('COS_REGION', 'ap-guangzhou')
+
+    config = CosConfig(
+        Region=region,
+        SecretId=secret_id,
+        SecretKey=secret_key,
+        Scheme='https',
+        Timeout=600,
+    )
+    return CosS3Client(config), bucket
 
 
 def abort_residual_multipart(client, bucket, cos_key):
@@ -198,18 +203,19 @@ def upload_large_file(client, bucket, local_path, cos_key):
     logger.info(f'  ✓ {filename} 上传成功（{size_mb:.1f}MB，分块 {PART_SIZE}MB）')
 
 
-def upload_one(client, bucket, local_path, cos_key, file_idx=None, accelerated_client=None):
+def upload_one(client, bucket, local_path, cos_key, file_idx=None, plain_client=None, plain_bucket=None):
     """
-    上传单个文件，带指数退避重试 + 碎片清理 + 自动切换加速域名。
+    上传单个文件，带指数退避重试 + 碎片清理 + 加速失败回退普通域名。
 
     重试策略：
     - 小文件：put_object 失败直接重试（无碎片问题）
     - 大文件：upload_file 失败 → abort 残留碎片 → 退避等待 → 重试
     - 间隔指数退避：5s, 10s, 20s, 40s, 80s（避开网络抖动窗口）
-    - 普通域名失败 ACCELERATE_THRESHOLD 次后，改用全球加速域名客户端重试
+    - 主客户端（加速域名）连续失败 FALLBACK_THRESHOLD 次后，回退普通地域域名兜底
 
     :param file_idx: (序号, 总数) 元组，用于日志显示 [i/N] 文件进度
-    :param accelerated_client: 全球加速域名客户端（None 表示不启用加速降级）
+    :param plain_client: 普通地域域名兜底客户端（None 表示不启用兜底）
+    :param plain_bucket: 普通地域域名对应的 bucket（与加速 bucket 同名，预留解耦）
     """
     size = os.path.getsize(local_path)
     filename = os.path.basename(local_path)
@@ -218,32 +224,34 @@ def upload_one(client, bucket, local_path, cos_key, file_idx=None, accelerated_c
     seq = f'[{file_idx[0]}/{file_idx[1]}] ' if file_idx else ''
 
     for attempt in range(1, MAX_RETRY + 1):
-        # 第 1~ACCELERATE_THRESHOLD 次走普通域名；之后改走全球加速域名。
-        # 切换的那一刻打一条醒目提示，方便 CI 日志追溯加速触发情况。
-        use_accel = accelerated_client is not None and attempt > ACCELERATE_THRESHOLD
-        active_client = accelerated_client if use_accel else client
-        if use_accel and attempt == ACCELERATE_THRESHOLD + 1:
-            logger.warning(f'  ⚡ 普通域名失败 {ACCELERATE_THRESHOLD} 次，切换全球加速域名重试')
+        # 第 1~FALLBACK_THRESHOLD 次走加速域名（主客户端）；之后回退普通地域域名兜底。
+        # 切换的那一刻打一条醒目提示，方便 CI 日志追溯兜底触发情况（极少触发）。
+        use_plain = plain_client is not None and attempt > FALLBACK_THRESHOLD
+        active_client = plain_client if use_plain else client
+        active_bucket = plain_bucket if use_plain else bucket
+        if use_plain and attempt == FALLBACK_THRESHOLD + 1:
+            logger.warning(f'  ⚠ 加速域名连续失败 {FALLBACK_THRESHOLD} 次，回退普通地域域名重试')
 
         try:
-            # 拼装日志前缀：[i/N] 文件序号 + [重试 N/M]（首次不标）+ [加速]（仅加速时）
+            # 拼装日志前缀：[i/N] 文件序号 + [重试 N/M]（首次不标）+ [兜底]（仅回退普通时）
             prefix = seq
             if attempt > 1:
                 prefix += f'[重试 {attempt}/{MAX_RETRY}] '
-            if use_accel:
-                prefix += '[加速] '
+            if use_plain:
+                prefix += '[兜底] '
             logger.info(f'{prefix}{filename} → {cos_key}')
             if is_small:
-                upload_small_file(active_client, bucket, local_path, cos_key)
+                upload_small_file(active_client, active_bucket, local_path, cos_key)
             else:
-                upload_large_file(active_client, bucket, local_path, cos_key)
+                upload_large_file(active_client, active_bucket, local_path, cos_key)
             return True
 
         except (CosClientError, CosServiceError) as e:
             last_err = e
             # 大文件失败后清理 COS 残留碎片（小文件无此问题）
+            # 用当前实际操作的 client + bucket，确保清理的是同一个域名下的碎片
             if not is_small:
-                abort_residual_multipart(active_client, bucket, cos_key)
+                abort_residual_multipart(active_client, active_bucket, cos_key)
 
             if attempt < MAX_RETRY:
                 interval = BASE_INTERVAL * (2 ** (attempt - 1))
@@ -277,12 +285,12 @@ def main():
         logger.error('版本号不能为空')
         sys.exit(1)
 
+    # 主客户端：默认走全球加速域名（已购买流量包，跨洲上传明显优于普通地域域名）
     client, bucket = build_client()
+    logger.info('⚡ 默认使用全球加速域名上传（cos.accelerate.myqcloud.com）')
 
-    # 预构造全球加速域名客户端（普通域名失败 1 次即启用，提前构造避免运行时延迟）
-    secret_id = os.environ.get('COS_SECRET_ID')
-    secret_key = os.environ.get('COS_SECRET_KEY')
-    accelerated_client = build_accelerated_client(secret_id, secret_key)
+    # 预构造普通地域域名兜底客户端（加速连续失败 FALLBACK_THRESHOLD 次后启用，极少触发）
+    plain_client, plain_bucket = build_plain_client()
 
     # 收集待上传文件，按规则分配 COS 路径：
     #   latest.json → 根目录（Tauri updater endpoint 固定）
@@ -309,7 +317,8 @@ def main():
         ok = upload_one(
             client, bucket, local_path, cos_key,
             file_idx=(idx, total),
-            accelerated_client=accelerated_client,
+            plain_client=plain_client,
+            plain_bucket=plain_bucket,
         )
         if not ok:
             failed.append(os.path.basename(local_path))
