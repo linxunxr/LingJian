@@ -6,6 +6,35 @@ use std::path::Path;
 use crate::models::log_entry::{LogEntry, LogLevel};
 use crate::services::github::{IssueActionResponse, IssueInfo, IssueList};
 
+/// 将 SCF 响应反序列化为 T，失败时把响应原文带进错误信息，便于诊断。
+///
+/// 不用 `resp.json()` 的原因：它内部消费了 body，解码失败时拿不到原文；
+/// 改为先 `bytes()` 取完整响应体再 `serde_json::from_slice`，这样错误信息里
+/// 能直接展示 SCF 实际返回了什么（HTML 错误页 / 降级对象 / 缺字段等）。
+async fn decode_scf_response<T: serde::de::DeserializeOwned>(
+    resp: reqwest::Response,
+) -> Result<T, String> {
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("读取 SCF 响应失败: {e}"))?;
+    serde_json::from_slice::<T>(&bytes).map_err(|e| {
+        // 响应原文做有损转码并截断，确保错误信息可读且不超长
+        let preview = String::from_utf8_lossy(&bytes);
+        let snippet = if preview.len() > 500 {
+            // 安全截断到 UTF-8 字符边界，避免 panic
+            let mut end = 500;
+            while end < preview.len() && !preview.is_char_boundary(end) {
+                end += 1;
+            }
+            format!("{}...(共{}字节)", &preview[..end], bytes.len())
+        } else {
+            preview.into_owned()
+        };
+        format!("解析 SCF 响应失败: {e}（原始响应: {snippet}）")
+    })
+}
+
 /// SCF 下载端点返回的 gzip 包解压后的 JSON 结构
 ///
 /// 兼容两种顶层格式：
@@ -117,9 +146,7 @@ pub async fn resolve_issue(
         });
     }
 
-    resp.json::<IssueInfo>()
-        .await
-        .map_err(|e| format!("解析 SCF 响应失败: {e}"))
+    decode_scf_response::<IssueInfo>(resp).await
 }
 
 /// 通过 SCF `/issues` 端点拉取上报问题列表。
@@ -164,9 +191,7 @@ pub async fn list_issues(
         });
     }
 
-    resp.json::<IssueList>()
-        .await
-        .map_err(|e| format!("解析 SCF 响应失败: {e}"))
+    decode_scf_response::<IssueList>(resp).await
 }
 
 /// 通过 SCF `/issue/:number/action` 端点操作 Issue。
@@ -230,9 +255,7 @@ pub async fn act_on_issue(
         });
     }
 
-    resp.json::<IssueActionResponse>()
-        .await
-        .map_err(|e| format!("解析 SCF 响应失败: {e}"))
+    decode_scf_response::<IssueActionResponse>(resp).await
 }
 
 /// 下载 gzip 日志包并解压为日志条目。
