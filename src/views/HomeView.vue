@@ -69,7 +69,7 @@ onActivated(() => {
 <template>
   <div class="home">
     <section class="hero">
-      <h2 class="hero-title">灵鉴 <span class="version">v0.1.8</span></h2>
+      <h2 class="hero-title">灵鉴 <span class="version">v0.1.9</span></h2>
       <p class="hero-desc">Path of Idle Immortals 日志分析工具</p>
     </section>
 
