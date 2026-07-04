@@ -122,6 +122,21 @@ watch(
   { deep: true },
 )
 
+/** 同页换 id 时重新加载（如启用 keep-alive 缓存或直接改 URL 场景） */
+watch(
+  () => route.query.id,
+  (id) => {
+    if (typeof id === 'string' && id) {
+      loadReport(id)
+    }
+    // 重置 Issue 操作的本地状态（避免残留上一份报告的菜单/对话框/状态）
+    openMenu.value = false
+    commentTarget.value = false
+    labelTarget.value = false
+    currentIssueState.value = null
+  },
+)
+
 /** 单独加载某 report 的分析（从首页最近列表点进来） */
 async function loadReport(reportId: string) {
   loadingStandalone.value = true
