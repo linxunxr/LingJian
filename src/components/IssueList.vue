@@ -64,19 +64,22 @@ async function confirmClose() {
   const version = resolveVersion.value.trim()
   const tagLabel = `v${version.replace(/^v/, '')}`
 
-  // 1) 关闭 Issue
-  const ok1 = await actOnIssue(number, 'close')
-  if (!ok1) return
+  // 1) 关闭 Issue —— 失败则保留弹窗让用户重试
+  const ok = await actOnIssue(number, 'close')
+  if (!ok) return
 
-  // 2) 追加版本标签
-  const newLabels = [...new Set([...labels, tagLabel])]
-  await actOnIssue(number, 'setLabels', { labels: newLabels })
-
-  // 3) 添加解决评论
-  await actOnIssue(number, 'comment', { body: `已在挂机仙途 ${tagLabel} 中标记为已处理` })
-
-  closeTarget.value = null
-  resolveVersion.value = ''
+  // 2) 追加版本标签 + 3) 解决评论 —— 后续步骤失败不阻断关弹窗
+  //    （Issue 已关闭是主目标，标签/评论失败仅作次要，错误会进 actionError 横幅）
+  try {
+    const base = Array.isArray(labels) ? labels : []
+    const newLabels = [...new Set([...base, tagLabel])]
+    await actOnIssue(number, 'setLabels', { labels: newLabels })
+    await actOnIssue(number, 'comment', { body: `已在挂机仙途 ${tagLabel} 中标记为已处理` })
+  } finally {
+    // 无论后续步骤成败，Issue 已关闭，弹窗必须关闭
+    closeTarget.value = null
+    resolveVersion.value = ''
+  }
 }
 
 /** 打开评论对话框 */
