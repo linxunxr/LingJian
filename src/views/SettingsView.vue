@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { getVersion } from '@tauri-apps/api/app'
 import { useSettings, saveSettings } from '@/composables/useSettings'
 import UpdateCard from '@/components/UpdateCard.vue'
 import DataCard from '@/components/DataCard.vue'
 
 const { settings, loadSettings } = useSettings()
+
+// 应用版本号（来自 Tauri 打包元数据，与首页 / 更新器共用单一数据源）
+const appVersion = ref('')
 
 const saving = ref(false)
 const saved = ref(false)
@@ -48,7 +52,10 @@ async function verifyScf() {
   }
 }
 
-onMounted(loadSettings)
+onMounted(async () => {
+  await loadSettings()
+  appVersion.value = await getVersion()
+})
 </script>
 
 <template>
@@ -89,7 +96,7 @@ onMounted(loadSettings)
 
     <section class="card about">
       <h3 class="card-title">关于</h3>
-      <p>灵鉴 LingJian v0.1.10</p>
+      <p>灵鉴 LingJian v{{ appVersion }}</p>
       <p class="muted">Path of Idle Immortals 日志分析工具</p>
     </section>
 

@@ -3,6 +3,7 @@ defineOptions({ name: 'HomeView' })
 import { onMounted, onActivated, ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { invoke } from '@tauri-apps/api/core'
+import { getVersion } from '@tauri-apps/api/app'
 
 import IssueInput from '@/components/IssueInput.vue'
 import IssueList from '@/components/IssueList.vue'
@@ -18,6 +19,8 @@ const { loadSettings } = useSettings()
 const { loadIssues } = useIssues()
 
 const recentReports = ref<Report[]>([])
+// 应用版本号（来自 Tauri 打包元数据，单一数据源，避免与配置文件版本号不一致）
+const appVersion = ref('')
 // 响应式跟随全局 settings：保存配置后无需重载页面即可刷新横幅状态
 const settingsReady = computed(() => isSettingsComplete())
 
@@ -52,6 +55,8 @@ let firstMount = true
 
 onMounted(async () => {
   await loadSettings()
+  // 读取应用版本号（getVersion 取 tauri.conf.json 的 version）
+  appVersion.value = await getVersion()
   // settingsReady 已是 computed，loadSettings 更新全局 settings 后自动重算
   // 配置完整时自动拉取问题列表；不完整时 loadIssues 内部会静默跳过
   await Promise.all([loadRecent(), loadIssues()])
@@ -69,7 +74,7 @@ onActivated(() => {
 <template>
   <div class="home">
     <section class="hero">
-      <h2 class="hero-title">灵鉴 <span class="version">v0.1.10</span></h2>
+      <h2 class="hero-title">灵鉴 <span class="version">v{{ appVersion }}</span></h2>
       <p class="hero-desc">Path of Idle Immortals 日志分析工具</p>
     </section>
 
