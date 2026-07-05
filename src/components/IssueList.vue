@@ -119,6 +119,13 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
           未处理
         </button>
         <button
+          :class="['tab', { active: state.state === 'closed' }]"
+          :disabled="state.loading"
+          @click="switchState('closed')"
+        >
+          已处理
+        </button>
+        <button
           :class="['tab', { active: state.state === 'all' }]"
           :disabled="state.loading"
           @click="switchState('all')"

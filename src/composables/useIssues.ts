@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import type { IssueActionResponse, IssueList, IssueListItem } from '@/types'
 import { settings } from './useSettings'
 
-type IssueState = 'open' | 'all'
+type IssueState = 'open' | 'closed' | 'all'
 
 interface IssuesState {
   /** 当前列表（跨页累积） */

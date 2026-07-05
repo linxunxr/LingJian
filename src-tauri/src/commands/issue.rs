@@ -55,6 +55,7 @@ pub async fn list_issues(
     // 规范化参数，防止传入异常值
     let st = match state.as_deref().unwrap_or("open") {
         "all" => "all",
+        "closed" => "closed",
         _ => "open",
     };
     let pg = page.unwrap_or(1).max(1);
