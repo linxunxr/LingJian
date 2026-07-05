@@ -23,6 +23,10 @@ const commentText = ref('')
 const labelTarget = ref<{ number: number } | null>(null)
 const labelDraft = ref<string[]>([])
 
+/** 关闭确认对话框 */
+const closeTarget = ref<{ number: number; labels: readonly string[] } | null>(null)
+const resolveVersion = ref('')
+
 function onSelect(number: number) {
   if (openMenu.value !== null) {
     // 菜单展开时，行点击不触发分析（避免误跳转）
@@ -41,10 +45,38 @@ function closeMenu() {
 }
 
 /** 关闭/重开 */
-async function onToggleState(number: number, issueState: string) {
+function onToggleState(number: number, issueState: string, labels: readonly string[] = []) {
   closeMenu()
-  const action = issueState === 'closed' ? 'reopen' : 'close'
-  await actOnIssue(number, action)
+  if (issueState === 'closed') {
+    // 重开：直接执行，无需版本号
+    actOnIssue(number, 'reopen')
+    return
+  }
+  // 关闭：弹出确认对话框，填入解决版本号后执行 close + 标签 + 评论
+  closeTarget.value = { number, labels }
+  resolveVersion.value = ''
+}
+
+/** 确认关闭：串行 close → setLabels → comment */
+async function confirmClose() {
+  if (!closeTarget.value || !resolveVersion.value.trim()) return
+  const { number, labels } = closeTarget.value
+  const version = resolveVersion.value.trim()
+  const tagLabel = `v${version.replace(/^v/, '')}`
+
+  // 1) 关闭 Issue
+  const ok1 = await actOnIssue(number, 'close')
+  if (!ok1) return
+
+  // 2) 追加版本标签
+  const newLabels = [...new Set([...labels, tagLabel])]
+  await actOnIssue(number, 'setLabels', { labels: newLabels })
+
+  // 3) 添加解决评论
+  await actOnIssue(number, 'comment', { body: `已在挂机仙途 ${tagLabel} 中标记为已处理` })
+
+  closeTarget.value = null
+  resolveVersion.value = ''
 }
 
 /** 打开评论对话框 */
@@ -184,7 +216,7 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
             {{ state.actingNumber === issue.number ? '⋯' : '⋮' }}
           </button>
           <div v-if="openMenu === issue.number" class="action-menu">
-            <button class="menu-item" @click="onToggleState(issue.number, issue.state)">
+            <button class="menu-item" @click="onToggleState(issue.number, issue.state, issue.labels)">
               {{ issue.state === 'closed' ? '↻ 重新打开' : '✓ 关闭 Issue' }}
             </button>
             <button class="menu-item" @click="openComment(issue.number)">💬 添加评论</button>
@@ -250,6 +282,33 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
         <div class="dialog-actions">
           <button class="ghost-btn" @click="labelTarget = null">取消</button>
           <button class="primary-btn" @click="submitLabels">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 关闭确认对话框 -->
+    <div v-if="closeTarget" class="dialog-overlay" @click.self="closeTarget = null">
+      <div class="dialog">
+        <h4 class="dialog-title">关闭 Issue · #{{ closeTarget.number }}</h4>
+        <p class="close-hint">
+          输入解决的挂机仙途版本号（如 0.9.19），关闭后将自动添加版本标签和评论。
+        </p>
+        <div class="close-input-row">
+          <span class="version-prefix">v</span>
+          <input
+            v-model="resolveVersion"
+            type="text"
+            class="version-input"
+            placeholder="0.9.19"
+            autofocus
+            @keyup.enter="confirmClose"
+          />
+        </div>
+        <div class="dialog-actions">
+          <button class="ghost-btn" @click="closeTarget = null">取消</button>
+          <button class="primary-btn" :disabled="!resolveVersion.trim()" @click="confirmClose">
+            确认关闭
+          </button>
         </div>
       </div>
     </div>
@@ -677,5 +736,46 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
   color: var(--color-text-muted);
   margin-top: 0.5rem;
   line-height: 1.5;
+}
+
+/* 关闭确认对话框 */
+.close-hint {
+  font-size: 0.8125rem;
+  color: var(--color-text-muted);
+  margin-bottom: 0.875rem;
+  line-height: 1.5;
+}
+
+.close-input-row {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.version-prefix {
+  padding: 0.5rem 0.625rem;
+  background-color: var(--color-surface-alt);
+  border: 1px solid var(--color-border);
+  border-right: none;
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
+  font-family: var(--font-mono);
+}
+
+.version-input {
+  flex: 1;
+  padding: 0.5rem 0.75rem;
+  background-color: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  color: var(--color-text);
+  font-size: 0.875rem;
+  font-family: var(--font-mono);
+}
+
+.version-input:focus {
+  outline: none;
+  border-color: var(--color-primary);
 }
 </style>
