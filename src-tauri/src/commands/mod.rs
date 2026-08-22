@@ -1,6 +1,7 @@
 pub mod analyze;
 pub mod download;
 pub mod export_;
+pub mod import;
 pub mod issue;
 pub mod reports;
 pub mod secret;

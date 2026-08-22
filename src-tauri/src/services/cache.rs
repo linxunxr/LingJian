@@ -24,6 +24,12 @@ impl Cache {
         conn.execute_batch(sql)
             .map_err(|e| format!("初始化数据库失败: {e}"))?;
 
+        // 增量迁移：CREATE TABLE IF NOT EXISTS 对旧库不生效，补列需显式 ALTER。
+        // 幂等设计：列已存在时报错可忽略，逐条独立执行互不影响。
+        if let Err(e) = conn.execute_batch("ALTER TABLE reports ADD COLUMN app_name TEXT;") {
+            log::debug!("跳过 app_name 迁移（列已存在）: {e}");
+        }
+
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -40,13 +46,14 @@ impl Cache {
         // upsert report
         tx.execute(
             "INSERT OR REPLACE INTO reports
-                (report_id, issue_number, issue_title, app_version, platform, realm,
+                (report_id, issue_number, issue_title, app_name, app_version, platform, realm,
                  play_time, user_description, report_time, log_count, downloaded_at)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             params![
                 report.report_id,
                 report.issue_number,
                 report.issue_title,
+                report.app_name,
                 report.app_version,
                 report.platform,
                 report.realm,
@@ -143,7 +150,7 @@ impl Cache {
         let conn = self.conn.lock().map_err(|e| format!("数据库锁失败: {e}"))?;
         let mut stmt = conn
             .prepare(
-                "SELECT report_id, issue_number, issue_title, app_version, platform, realm,
+                "SELECT report_id, issue_number, issue_title, app_name, app_version, platform, realm,
                         play_time, user_description, report_time, log_count, downloaded_at
                  FROM reports
                  ORDER BY downloaded_at DESC
@@ -167,7 +174,7 @@ impl Cache {
         let conn = self.conn.lock().map_err(|e| format!("数据库锁失败: {e}"))?;
         let mut stmt = conn
             .prepare(
-                "SELECT report_id, issue_number, issue_title, app_version, platform, realm,
+                "SELECT report_id, issue_number, issue_title, app_name, app_version, platform, realm,
                         play_time, user_description, report_time, log_count, downloaded_at
                  FROM reports
                  WHERE report_id = ?",
@@ -187,19 +194,99 @@ impl Cache {
 
 /// rusqlite 行映射到 Report
 fn row_to_report(row: &rusqlite::Row) -> rusqlite::Result<Report> {
-    let play_time_i: Option<i64> = row.get(6)?;
-    let log_count_i: i64 = row.get(9)?;
+    let play_time_i: Option<i64> = row.get(7)?;
+    let log_count_i: i64 = row.get(10)?;
     Ok(Report {
         report_id: row.get(0)?,
         issue_number: row.get(1)?,
         issue_title: row.get(2)?,
-        app_version: row.get(3)?,
-        platform: row.get(4)?,
-        realm: row.get(5)?,
+        app_name: row.get(3)?,
+        app_version: row.get(4)?,
+        platform: row.get(5)?,
+        realm: row.get(6)?,
         play_time: play_time_i.map(|v| v as u64),
-        user_description: row.get(7)?,
-        report_time: row.get(8)?,
+        user_description: row.get(8)?,
+        report_time: row.get(9)?,
         log_count: log_count_i as usize,
-        downloaded_at: row.get(10)?,
+        downloaded_at: row.get(11)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 旧版库（reports 表无 app_name 列）打开时自动迁移，旧数据可读
+    #[test]
+    fn open_migrates_legacy_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("legacy.db");
+
+        // 构造旧 schema（本次扩展之前）
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE reports (
+                    report_id TEXT PRIMARY KEY,
+                    issue_number INTEGER,
+                    issue_title TEXT,
+                    app_version TEXT,
+                    platform TEXT,
+                    realm TEXT,
+                    play_time INTEGER,
+                    user_description TEXT,
+                    report_time TEXT NOT NULL,
+                    log_count INTEGER NOT NULL DEFAULT 0,
+                    downloaded_at TEXT NOT NULL
+                );
+                INSERT INTO reports VALUES ('r1', 42, '旧问题', '1.0', 'electron', '筑基期',
+                    NULL, NULL, '2026-06-08T14:00:00Z', 2, '2026-06-08T15:00:00Z');",
+            )
+            .unwrap();
+        }
+
+        // 打开 = 执行迁移
+        let cache = Cache::open(&db).unwrap();
+        let report = cache.get_report("r1").unwrap().unwrap();
+        assert_eq!(report.issue_number, Some(42));
+        assert_eq!(report.app_name, None); // 新列默认 NULL
+        assert_eq!(report.app_version, Some("1.0".to_string()));
+    }
+
+    /// app_name 字段读写往返
+    #[test]
+    fn save_and_read_app_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("new.db");
+        let cache = Cache::open(&db).unwrap();
+
+        let report = Report {
+            report_id: "local-x".to_string(),
+            issue_number: None,
+            issue_title: Some("starlight-2026-08-11.log".to_string()),
+            app_name: Some("starlight".to_string()),
+            app_version: None,
+            platform: Some("HarmonyOS".to_string()),
+            realm: None,
+            play_time: None,
+            user_description: None,
+            report_time: "2026-08-22T10:00:00Z".to_string(),
+            log_count: 1,
+            downloaded_at: "2026-08-22T10:00:01Z".to_string(),
+        };
+        let entry = LogEntry {
+            timestamp: "2026-08-11T10:30:20.364".to_string(),
+            level: LogLevel::Fatal,
+            tag: "Player".to_string(),
+            message: "boom".to_string(),
+            data: None,
+        };
+        cache.save_report(&report, &[entry]).unwrap();
+
+        let loaded = cache.get_report("local-x").unwrap().unwrap();
+        assert_eq!(loaded.app_name.as_deref(), Some("starlight"));
+        let entries = cache.get_entries("local-x").unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].level, LogLevel::Fatal); // FATAL 级别往返不丢
+    }
 }

@@ -10,7 +10,7 @@ use tauri::Manager;
 use services::cache::Cache;
 use services::paths;
 
-use commands::{analyze, download, export_, issue, reports, secret, settings, storage};
+use commands::{analyze, download, export_, import, issue, reports, secret, settings, storage};
 
 /// 全局共享的应用状态
 pub struct AppState {
@@ -73,6 +73,7 @@ pub fn run() {
             issue::act_on_issue,
             issue::is_report_id_input,
             download::download_log,
+            import::import_log_file,
             analyze::analyze_log,
             reports::list_recent_reports,
             export_::export_report,

@@ -10,6 +10,8 @@ pub struct Report {
     pub issue_number: Option<i32>,
     /// 关联的 GitHub Issue 标题
     pub issue_title: Option<String>,
+    /// 来源应用名（本地导入的鸿蒙 App 日志标注用；Issue 流程为空）
+    pub app_name: Option<String>,
     /// 游戏版本
     pub app_version: Option<String>,
     /// 平台

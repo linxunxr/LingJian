@@ -1,6 +1,6 @@
 [package]
 name = "lingjian"
-version = "0.1.16"
+version = "0.2.0"
 edition = "2021"
 
 [lib]
@@ -26,6 +26,7 @@ regex = "1"
 log = "0.4"
 chrono = "0.4"
 keyring = "3"
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 tempfile = "3"

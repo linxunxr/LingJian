@@ -55,6 +55,7 @@ pub async fn download_log(
         report_id: report_id.clone(),
         issue_number: issue_meta.as_ref().and_then(|m| m.issue_number),
         issue_title: issue_meta.as_ref().and_then(|m| m.issue_title.clone()),
+        app_name: None,
         app_version: issue_meta.as_ref().and_then(|m| m.app_version.clone()),
         platform: issue_meta.as_ref().and_then(|m| m.platform.clone()),
         realm: issue_meta.as_ref().and_then(|m| m.realm.clone()),
