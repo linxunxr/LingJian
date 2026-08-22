@@ -180,9 +180,12 @@ async function closeOnboarding() {
   50% { opacity: 0.4; }
 }
 
+/* flex 列布局：页面根节点可自行决定占满高度（分析页）或自然流式（首页/设置页） */
 .app-main {
   flex: 1;
   overflow: auto;
-  padding: 1.5rem;
+  padding: 1.25rem 1.5rem;
+  display: flex;
+  flex-direction: column;
 }
 </style>

@@ -79,6 +79,8 @@ const totalHeight = computed(() => virtualizer.value.getTotalSize())
 
 <style scoped>
 .log-table {
+  display: flex;
+  flex-direction: column;
   background-color: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
@@ -104,8 +106,10 @@ const totalHeight = computed(() => virtualizer.value.getTotalSize())
   height: 32px;
 }
 
+/* 高度由父容器决定（分析页剩余空间）；min-height 保证窄窗口下仍可滚动 */
 .log-table__body {
-  height: 420px;
+  flex: 1;
+  min-height: 200px;
   overflow-y: auto;
 }
 

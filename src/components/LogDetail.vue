@@ -2,8 +2,15 @@
 import type { LogEntry } from '@/types'
 import { formatTime, levelClass } from '@/utils/format'
 
+/** 未选中日志时的概览信息（由分析页传入，替代单行空态占位） */
 defineProps<{
   entry: LogEntry | null
+  summary?: {
+    shown: number
+    total: number
+    first: string
+    last: string
+  } | null
 }>()
 
 function formatData(data: unknown): string {
@@ -15,7 +22,31 @@ function formatData(data: unknown): string {
 
 <template>
   <div class="log-detail">
-    <div v-if="!entry" class="empty">点击左侧日志查看详情</div>
+    <div v-if="!entry" class="empty">
+      <template v-if="summary">
+        <p class="empty-title">未选中日志 · 概览</p>
+        <div class="summary">
+          <div class="summary-row">
+            <span class="label">当前匹配</span>
+            <span class="value">{{ summary.shown }} 条</span>
+          </div>
+          <div class="summary-row">
+            <span class="label">日志总量</span>
+            <span class="value">{{ summary.total }} 条</span>
+          </div>
+          <div class="summary-row">
+            <span class="label">首条时间</span>
+            <span class="value">{{ formatTime(summary.first) }}</span>
+          </div>
+          <div class="summary-row">
+            <span class="label">末条时间</span>
+            <span class="value">{{ formatTime(summary.last) }}</span>
+          </div>
+        </div>
+        <p class="empty-hint">点击左侧任意一行查看完整详情</p>
+      </template>
+      <template v-else>点击左侧日志查看详情</template>
+    </div>
     <template v-else>
       <div class="detail-row">
         <span class="label">时间</span>
@@ -43,6 +74,8 @@ function formatData(data: unknown): string {
 
 <style scoped>
 .log-detail {
+  display: flex;
+  flex-direction: column;
   background-color: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
@@ -51,9 +84,42 @@ function formatData(data: unknown): string {
 }
 
 .empty {
-  text-align: center;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   color: var(--color-text-muted);
   padding: 1.5rem 0;
+}
+
+.empty-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-text);
+  margin-bottom: 0.875rem;
+}
+
+.summary {
+  width: 100%;
+  max-width: 320px;
+}
+
+.summary-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.375rem 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.summary-row:last-child {
+  border-bottom: none;
+}
+
+.empty-hint {
+  margin-top: 1rem;
+  font-size: 0.75rem;
 }
 
 .detail-row {

@@ -139,6 +139,18 @@ const currentReportId = computed(() => state.reportId ?? (route.query.id as stri
 const result = computed(() => state.result ?? standaloneResult.value)
 const report = computed(() => standaloneReport.value ?? state.issue)
 
+/** 详情面板空态概览（当前匹配条数 / 总量 / 首末时间） */
+const entrySummary = computed(() => {
+  const r = result.value
+  if (!r || r.entries.length === 0) return null
+  return {
+    shown: r.entries.length,
+    total: r.total,
+    first: r.entries[0].timestamp,
+    last: r.entries[r.entries.length - 1].timestamp,
+  }
+})
+
 /** 监听 filter 变化重新分析（防抖：500ms） */
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
 watch(
@@ -307,7 +319,7 @@ onUnmounted(() => {
           <LogTable v-model:selected="selected" :entries="result.entries" />
         </div>
         <div class="log-area__detail">
-          <LogDetail :entry="selected" />
+          <LogDetail :entry="selected" :summary="entrySummary" />
         </div>
       </div>
     </template>
@@ -373,8 +385,11 @@ onUnmounted(() => {
 
 <style scoped>
 .analyze {
-  max-width: 1080px;
+  width: 100%;
+  max-width: 1400px;
   margin: 0 auto;
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 1rem;
@@ -476,9 +491,31 @@ onUnmounted(() => {
 }
 
 .log-area {
+  flex: 1;
+  min-height: 260px;
   display: grid;
   grid-template-columns: 2fr 1fr;
   gap: 1rem;
+}
+
+/* 日志表格与详情随剩余空间拉伸（LogTable 侧由内容撑开，详情侧铺满） */
+.log-area__table {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.log-area__table > :deep(.log-table) {
+  flex: 1;
+  min-height: 0;
+}
+.log-area__detail {
+  display: flex;
+  flex-direction: column;
+}
+
+.log-area__detail > :deep(.log-detail) {
+  flex: 1;
 }
 
 .error-msg {
@@ -492,6 +529,10 @@ onUnmounted(() => {
 
 .loading,
 .placeholder {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   text-align: center;
   color: var(--color-text-muted);
   padding: 3rem 0;
