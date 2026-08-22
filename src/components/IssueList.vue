@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useIssues } from '@/composables/useIssues'
+import { isSettingsComplete } from '@/composables/useSettings'
 import { formatTime } from '@/utils/format'
 
 const emit = defineEmits<{
@@ -9,6 +10,9 @@ const emit = defineEmits<{
 }>()
 
 const { state, loadIssues, switchState, loadMore, actOnIssue, clearActionError } = useIssues()
+
+/** SCF 端点是否已配置（未配置时列表区显示引导空态，而非整块空白） */
+const configured = computed(() => isSettingsComplete())
 
 /** 预设标签（一期硬编码，后续可配置化） */
 const PRESET_LABELS = ['已修复', '无法复现', '高优先级', '待验证'] as const
@@ -185,6 +189,15 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
     <!-- 列表加载错误 -->
     <div v-else-if="state.error" class="error-msg">{{ state.error }}</div>
 
+    <!-- 未配置 SCF：显示引导空态（loadIssues 静默跳过，四个常规分支都不会命中） -->
+    <div v-else-if="!configured" class="empty empty--guide">
+      <p class="empty-title">问题列表需要 SCF 端点配置</p>
+      <p class="empty-desc">
+        前往 <RouterLink :to="{ name: 'settings' }">设置页</RouterLink> 填写 URL 与 API Key 后即可拉取；
+        仅分析本地日志可不配置，直接使用上方「导入本地日志」。
+      </p>
+    </div>
+
     <!-- 空态 -->
     <div v-else-if="state.loaded && state.issues.length === 0" class="empty">暂无上报问题</div>
 
@@ -230,6 +243,9 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
         </div>
       </li>
     </ul>
+
+    <!-- 已配置但尚未拉取（如刚保存配置返回首页）：引导手动刷新 -->
+    <div v-else class="empty">配置已就绪，点击右上角 ↻ 拉取问题列表</div>
 
     <!-- 加载更多 -->
     <div v-if="state.hasMore && !state.loading" class="load-more">
@@ -564,6 +580,27 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
   text-align: center;
   color: var(--color-text-muted);
   font-size: 0.85rem;
+}
+
+/* 未配置引导空态：占满列表区域，避免大片空白 */
+.empty--guide {
+  padding: 2.5rem 1.5rem;
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.empty-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text);
+  margin-bottom: 0.5rem;
+}
+
+.empty-desc {
+  font-size: 0.8125rem;
+  line-height: 1.7;
+  max-width: 420px;
+  margin: 0 auto;
 }
 
 .error-msg {
