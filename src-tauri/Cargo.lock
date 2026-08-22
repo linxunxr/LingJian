@@ -1890,7 +1890,7 @@ dependencies = [
 
 [[package]]
 name = "lingjian"
-version = "0.1.11"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "flate2",
@@ -1909,6 +1909,7 @@ dependencies = [
  "tauri-plugin-store",
  "tauri-plugin-updater",
  "tempfile",
+ "uuid",
 ]
 
 [[package]]
