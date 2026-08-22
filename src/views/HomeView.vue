@@ -178,8 +178,10 @@ onActivated(() => {
 
 <style scoped>
 .home {
-  max-width: 760px;
+  width: 100%;
+  max-width: 960px;
   margin: 0 auto;
+  flex-shrink: 0;
 }
 
 .hero {

@@ -94,13 +94,16 @@ onMounted(async () => {
       <span v-else-if="error" class="error-tip">{{ error }}</span>
     </div>
 
-    <section class="card about">
-      <h3 class="card-title">关于</h3>
-      <p>灵鉴 LingJian v{{ appVersion }}</p>
-      <p class="muted">Path of Idle Immortals 日志分析工具</p>
-    </section>
+    <div class="card-row">
+      <section class="card about">
+        <h3 class="card-title">关于</h3>
+        <p>灵鉴 LingJian v{{ appVersion }}</p>
+        <p class="muted">Path of Idle Immortals 日志分析工具</p>
+        <p class="muted">支持 Issue 日志拉取分析与鸿蒙应用本地日志导入</p>
+      </section>
 
-    <DataCard />
+      <DataCard />
+    </div>
 
     <UpdateCard />
   </div>
@@ -108,8 +111,29 @@ onMounted(async () => {
 
 <style scoped>
 .settings {
-  max-width: 600px;
+  width: 100%;
+  max-width: 860px;
   margin: 0 auto;
+  flex-shrink: 0;
+}
+
+/* 关于 + 数据管理双栏：缩短纵向长度，窄窗口自动退化为单列 */
+.card-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  align-items: start;
+  margin-bottom: 1rem;
+}
+
+.card-row .card {
+  margin-bottom: 0;
+}
+
+@media (max-width: 720px) {
+  .card-row {
+    grid-template-columns: 1fr;
+  }
 }
 
 .settings-title {

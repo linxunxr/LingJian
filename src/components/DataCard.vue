@@ -119,8 +119,13 @@ onMounted(refresh)
 </template>
 
 <style scoped>
+/* 设置页双栏布局时由父容器控制间距；单独使用时保留默认下边距 */
 .data-card {
   margin-bottom: 1rem;
+}
+
+.card-row .data-card {
+  margin-bottom: 0;
 }
 
 .card-title {
