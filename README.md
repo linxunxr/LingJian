@@ -1,8 +1,8 @@
 # 灵鉴 LingJian
 
-> Path of Idle Immortals 日志分析工具
+> 日志分析工具（Path of Idle Immortals 日志上报 + 鸿蒙应用本地日志）
 
-灵鉴是仙侠游戏《Path of Idle Immortals》日志上报系统的消费端工具。开发团队收到 GitHub Issue 后，通过灵鉴一键下载并分析用户上报的 gzip 压缩日志，快速定位 bug 根因。
+灵鉴是《Path of Idle Immortals》日志上报系统的消费端工具：开发团队收到 GitHub Issue 后，通过灵鉴一键下载并分析用户上报的 gzip 压缩日志，快速定位 bug 根因。同时支持导入鸿蒙应用本地日志（基于 [@huanyinfeng/logger](https://ohpm.openharmony.cn/) 库落盘的所有 App 日志，如星光音乐），拖入文件即可使用同一套分析能力。
 
 ## 核心工作流
 
