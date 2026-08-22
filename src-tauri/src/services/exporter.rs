@@ -65,17 +65,17 @@ fn render_markdown(report: &Report, entries: &[LogEntry]) -> String {
     md.push_str("\n");
 
     // 级别统计
-    let (debug, info, warn, error) = count_levels(entries);
+    let (debug, info, warn, error, fatal) = count_levels(entries);
     md.push_str("## 级别统计\n\n");
     md.push_str(&format!(
-        "| DEBUG | INFO | WARN | ERROR |\n|-------|------|------|-------|\n| {} | {} | {} | {} |\n\n",
-        debug, info, warn, error
+        "| DEBUG | INFO | WARN | ERROR | FATAL |\n|-------|------|------|-------|-------|\n| {} | {} | {} | {} | {} |\n\n",
+        debug, info, warn, error, fatal
     ));
 
     // 错误聚合
     let error_entries: Vec<&LogEntry> = entries
         .iter()
-        .filter(|e| matches!(e.level, LogLevel::Error))
+        .filter(|e| matches!(e.level, LogLevel::Error | LogLevel::Fatal))
         .collect();
     if !error_entries.is_empty() {
         md.push_str("## 错误聚合\n\n");
@@ -139,20 +139,22 @@ fn csv_escape(s: &str) -> String {
 }
 
 /// 统计各级别数量
-fn count_levels(entries: &[LogEntry]) -> (usize, usize, usize, usize) {
+fn count_levels(entries: &[LogEntry]) -> (usize, usize, usize, usize, usize) {
     let mut d = 0;
     let mut i = 0;
     let mut w = 0;
     let mut e = 0;
+    let mut f = 0;
     for entry in entries {
         match entry.level {
             LogLevel::Debug => d += 1,
             LogLevel::Info => i += 1,
             LogLevel::Warn => w += 1,
             LogLevel::Error => e += 1,
+            LogLevel::Fatal => f += 1,
         }
     }
-    (d, i, w, e)
+    (d, i, w, e, f)
 }
 
 /// 错误聚合结构（导出专用，避免依赖 analyzer）
@@ -208,6 +210,7 @@ mod tests {
             report_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
             issue_number: Some(42),
             issue_title: Some("测试".to_string()),
+            app_name: None,
             app_version: Some("1.0".to_string()),
             platform: Some("electron".to_string()),
             realm: None,

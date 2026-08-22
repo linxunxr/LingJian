@@ -8,6 +8,8 @@ pub enum LogLevel {
     Info,
     Warn,
     Error,
+    /// 致命错误（鸿蒙 hilog / huanyinfeng/logger 的 F 级）
+    Fatal,
 }
 
 impl LogLevel {
@@ -18,6 +20,7 @@ impl LogLevel {
             LogLevel::Info => "INFO",
             LogLevel::Warn => "WARN",
             LogLevel::Error => "ERROR",
+            LogLevel::Fatal => "FATAL",
         }
     }
 
@@ -28,6 +31,7 @@ impl LogLevel {
             "INFO" => Some(LogLevel::Info),
             "WARN" | "WARNING" => Some(LogLevel::Warn),
             "ERROR" => Some(LogLevel::Error),
+            "FATAL" => Some(LogLevel::Fatal),
             _ => None,
         }
     }

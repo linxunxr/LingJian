@@ -86,6 +86,7 @@ pub struct LevelCounts {
     pub info: usize,
     pub warn: usize,
     pub error: usize,
+    pub fatal: usize,
 }
 
 /// tag 计数

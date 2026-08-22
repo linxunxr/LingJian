@@ -84,8 +84,9 @@ struct RawLog {
 
 impl RawLog {
     fn into_entry(self) -> Result<LogEntry, String> {
-        let level = LogLevel::parse(&self.level)
-            .ok_or_else(|| format!("未知日志级别: {}", self.level))?;
+        // 未知级别降级为 INFO（兼容上游新增 TRACE 等），
+        // 避免单条异常级别导致整份日志解析失败
+        let level = LogLevel::parse(&self.level).unwrap_or(LogLevel::Info);
         // tag 优先级：tag > category > module > "未知"
         let tag = if !self.tag.is_empty() {
             self.tag
@@ -363,8 +364,15 @@ fn decode_gzip(bytes: &[u8]) -> Result<Vec<LogEntry>, String> {
         .read_to_string(&mut json_str)
         .map_err(|e| format!("gzip 解压失败: {e}"))?;
 
+    parse_json_logs(&json_str)
+}
+
+/// 解析 JSON 文本（gzip 解压后或本地 JSON 日志）为日志条目
+///
+/// 供 SCF 下载流程与本地导入（JSON 格式探测）共用。
+pub fn parse_json_logs(text: &str) -> Result<Vec<LogEntry>, String> {
     let payload: LogPayload =
-        serde_json::from_str(&json_str).map_err(|e| format!("JSON 解析失败: {e}"))?;
+        serde_json::from_str(text).map_err(|e| format!("JSON 解析失败: {e}"))?;
 
     payload
         .into_logs()
@@ -412,10 +420,28 @@ mod tests {
     }
 
     #[test]
-    fn decode_invalid_level() {
-        let json = r#"{"logs":[{"timestamp":"t","level":"FATAL","message":"x"}]}"#;
+    fn decode_fatal_level() {
+        // FATAL 是合法级别（鸿蒙侧 F 级），不再导致解析失败
+        let json = r#"{"logs":[
+            {"timestamp":"t","level":"FATAL","tag":"崩溃","message":"native crash"}
+        ]}"#;
         let gz = gzip_json(json);
-        assert!(decode_gzip(&gz).is_err());
+        let entries = decode_gzip(&gz).unwrap();
+        assert_eq!(entries[0].level, LogLevel::Fatal);
+    }
+
+    #[test]
+    fn decode_unknown_level_tolerated() {
+        // 完全未知的级别降级为 INFO，不阻断整份日志
+        let json = r#"{"logs":[
+            {"timestamp":"t1","level":"TRACE","tag":"a","message":"x"},
+            {"timestamp":"t2","level":"ERROR","tag":"a","message":"y"}
+        ]}"#;
+        let gz = gzip_json(json);
+        let entries = decode_gzip(&gz).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].level, LogLevel::Info);
+        assert_eq!(entries[1].level, LogLevel::Error);
     }
 
     #[test]

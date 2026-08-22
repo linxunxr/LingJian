@@ -17,6 +17,7 @@ pub fn analyze(entries: &[LogEntry], filter: &LogFilter) -> AnalysisResult {
             LogLevel::Info => level_counts.info += 1,
             LogLevel::Warn => level_counts.warn += 1,
             LogLevel::Error => level_counts.error += 1,
+            LogLevel::Fatal => level_counts.fatal += 1,
         }
         *tag_map.entry(e.tag.clone()).or_insert(0) += 1;
     }
@@ -35,10 +36,10 @@ pub fn analyze(entries: &[LogEntry], filter: &LogFilter) -> AnalysisResult {
         .cloned()
         .collect();
 
-    // 时间线：过滤后的 WARN/ERROR
+    // 时间线：过滤后的 WARN/ERROR/FATAL
     let timeline: Vec<TimelinePoint> = filtered
         .iter()
-        .filter(|e| matches!(e.level, LogLevel::Warn | LogLevel::Error))
+        .filter(|e| matches!(e.level, LogLevel::Warn | LogLevel::Error | LogLevel::Fatal))
         .map(|e| TimelinePoint {
             timestamp: e.timestamp.clone(),
             level: e.level,
@@ -46,9 +47,11 @@ pub fn analyze(entries: &[LogEntry], filter: &LogFilter) -> AnalysisResult {
         })
         .collect();
 
-    // 错误聚合：过滤后的 ERROR 按 message 去重计数
+    // 错误聚合：过滤后的 ERROR/FATAL 按 message 去重计数
     let error_aggregates = aggregate_errors(
-        filtered.iter().filter(|e| matches!(e.level, LogLevel::Error)),
+        filtered
+            .iter()
+            .filter(|e| matches!(e.level, LogLevel::Error | LogLevel::Fatal)),
     );
 
     AnalysisResult {
