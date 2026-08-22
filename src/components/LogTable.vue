@@ -157,6 +157,10 @@ const totalHeight = computed(() => virtualizer.value.getTotalSize())
 .level-error .col-level {
   color: var(--color-danger);
 }
+.level-fatal .col-level {
+  color: var(--color-danger);
+  font-weight: 700;
+}
 
 .empty {
   padding: 2rem 0;

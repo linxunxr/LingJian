@@ -34,9 +34,14 @@ const Y_LABELS: Record<number, string> = {
 
 /** 散点数据，按级别分组为两个 dataset */
 const chartData = computed<ChartData<'scatter'>>(() => {
+  // FATAL 与 ERROR 同层展示（同为红色，FATAL 半径更大以示区分）
   const errorPoints = props.points
-    .filter((p) => p.level === 'ERROR')
-    .map((p) => ({ x: new Date(p.timestamp).getTime(), y: 1, message: p.message }))
+    .filter((p) => p.level === 'ERROR' || p.level === 'FATAL')
+    .map((p) => ({
+      x: new Date(p.timestamp).getTime(),
+      y: 1,
+      message: `[${p.level}] ${p.message}`,
+    }))
   const warnPoints = props.points
     .filter((p) => p.level === 'WARN')
     .map((p) => ({ x: new Date(p.timestamp).getTime(), y: 2, message: p.message }))
@@ -44,7 +49,7 @@ const chartData = computed<ChartData<'scatter'>>(() => {
   return {
     datasets: [
       {
-        label: 'ERROR',
+        label: 'ERROR/FATAL',
         data: errorPoints,
         backgroundColor: '#EF4444',
         pointRadius: 5,
@@ -133,12 +138,12 @@ onUnmounted(() => chart?.destroy())
   <div class="timeline">
     <div class="timeline__header">
       <span class="timeline__title">错误时间线</span>
-      <span v-if="points.length === 0" class="timeline__empty-hint">暂无 WARN/ERROR</span>
+      <span v-if="points.length === 0" class="timeline__empty-hint">暂无 WARN/ERROR/FATAL</span>
     </div>
     <div class="timeline__canvas-wrap">
       <canvas v-show="points.length > 0" ref="canvasRef" />
       <div v-if="points.length === 0" class="timeline__empty">
-        暂无 WARN/ERROR 日志
+        暂无 WARN/ERROR/FATAL 日志
       </div>
     </div>
   </div>

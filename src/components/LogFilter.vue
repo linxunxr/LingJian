@@ -12,7 +12,7 @@ const filter = defineModel<{
   keyword: string
 }>({ required: true })
 
-const allLevels: LogLevel[] = ['DEBUG', 'INFO', 'WARN', 'ERROR']
+const allLevels: LogLevel[] = ['DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL']
 
 function toggleLevel(level: LogLevel) {
   const idx = filter.value.levels.indexOf(level)
@@ -120,6 +120,10 @@ function clearAll() {
 }
 
 .chip.level-error.active {
+  background-color: var(--color-danger);
+}
+
+.chip.level-fatal.active {
   background-color: var(--color-danger);
 }
 

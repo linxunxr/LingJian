@@ -13,7 +13,7 @@ defineProps<{
       <span class="title">错误聚合</span>
       <span v-if="aggregates.length > 0" class="count">{{ aggregates.length }} 类</span>
     </div>
-    <div v-if="aggregates.length === 0" class="empty">暂无 ERROR 日志</div>
+    <div v-if="aggregates.length === 0" class="empty">暂无 ERROR/FATAL 日志</div>
     <ul v-else class="list">
       <li v-for="(agg, idx) in aggregates" :key="idx" class="item">
         <span class="count-badge">{{ agg.count }}</span>

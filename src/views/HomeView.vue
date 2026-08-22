@@ -4,6 +4,7 @@ import { onMounted, onActivated, ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { invoke } from '@tauri-apps/api/core'
 import { getVersion } from '@tauri-apps/api/app'
+import { open } from '@tauri-apps/plugin-dialog'
 
 import IssueInput from '@/components/IssueInput.vue'
 import IssueList from '@/components/IssueList.vue'
@@ -14,7 +15,7 @@ import { formatTime } from '@/utils/format'
 import type { Report } from '@/types'
 
 const router = useRouter()
-const { runAnalysis, state } = useAnalysis()
+const { runAnalysis, importLocalFile, state } = useAnalysis()
 const { loadSettings } = useSettings()
 const { loadIssues } = useIssues()
 
@@ -23,17 +24,19 @@ const recentReports = ref<Report[]>([])
 const appVersion = ref('')
 // 响应式跟随全局 settings：保存配置后无需重载页面即可刷新横幅状态
 const settingsReady = computed(() => isSettingsComplete())
+// 拖拽悬停高亮
+const dragOver = ref(false)
 
 const stageText: Record<string, string> = {
   parsing: '正在解析 Issue...',
   downloading: '正在下载日志...',
+  importing: '正在导入日志...',
   analyzing: '正在分析日志...',
 }
 
 async function loadRecent() {
   try {
     const result = await invoke<Report[]>('list_recent_reports', { limit: 10 })
-    console.log('[loadRecent] 返回', Array.isArray(result) ? result.length : '非数组', '条记录')
     recentReports.value = Array.isArray(result) ? result : []
   } catch (e) {
     console.error('[loadRecent] 调用失败:', e)
@@ -44,6 +47,50 @@ async function loadRecent() {
 /** 分析入口：手动输入或从问题列表点选，统一走 runAnalysis */
 async function onSubmit(input: string) {
   await runAnalysis(input)
+  if (state.reportId) {
+    router.push({ name: 'analyze', query: { id: state.reportId } })
+  }
+}
+
+/** 本地导入入口：文件选择对话框，支持多选（逐个导入，跳到最后一个分析） */
+async function onPickFile() {
+  if (state.stage !== 'idle' && state.stage !== 'done') return
+  const files = await open({
+    title: '导入本地日志文件',
+    multiple: true,
+    filters: [
+      {
+        name: '日志文件',
+        extensions: ['log', 'txt', 'json', 'zip', 'gz'],
+      },
+    ],
+  })
+  if (!files) return
+  const paths = Array.isArray(files) ? files : [files]
+  for (const p of paths) {
+    await importLocalFile(p)
+    if (state.error) return // 单个失败即停，展示错误
+  }
+  if (state.reportId) {
+    router.push({ name: 'analyze', query: { id: state.reportId } })
+  }
+}
+
+/** 全窗口拖拽导入（dataTransfer 取本地文件路径） */
+async function onDrop(e: DragEvent) {
+  dragOver.value = false
+  if (state.stage !== 'idle' && state.stage !== 'done') return
+  const files = Array.from(e.dataTransfer?.files ?? [])
+  if (files.length === 0) return
+  for (const f of files) {
+    // Tauri 2 的 File 对象带 path 属性（非标准但可用）；无路径时跳过并提示
+    const p = (f as File & { path?: string }).path
+    if (!p) {
+      continue
+    }
+    await importLocalFile(p)
+    if (state.error) return
+  }
   if (state.reportId) {
     router.push({ name: 'analyze', query: { id: state.reportId } })
   }
@@ -72,14 +119,26 @@ onActivated(() => {
 </script>
 
 <template>
-  <div class="home">
+  <div
+    class="home"
+    :class="{ 'home--drag': dragOver }"
+    @dragover.prevent="dragOver = true"
+    @dragleave.prevent="dragOver = false"
+    @drop.prevent="onDrop"
+  >
     <section class="hero">
       <h2 class="hero-title">灵鉴 <span class="version">v{{ appVersion }}</span></h2>
-      <p class="hero-desc">Path of Idle Immortals 日志分析工具</p>
+      <p class="hero-desc">Path of Idle Immortals 日志分析工具 · 支持导入鸿蒙应用本地日志</p>
     </section>
 
     <section class="search">
       <IssueInput :loading="state.stage !== 'idle' && state.stage !== 'done'" @submit="onSubmit" />
+      <div class="import-row">
+        <button class="import-btn" :disabled="state.stage !== 'idle' && state.stage !== 'done'" @click="onPickFile">
+          📂 导入本地日志
+        </button>
+        <span class="import-hint">支持 huanyinfeng/logger 落盘日志（.log/.txt）、zlib/gzip 压缩包，也可直接拖入窗口</span>
+      </div>
       <p v-if="state.error" class="error-msg">{{ state.error }}</p>
       <p v-else-if="state.stage !== 'idle' && state.stage !== 'done'" class="stage-msg">
         {{ stageText[state.stage] }}
@@ -87,7 +146,7 @@ onActivated(() => {
       <p v-if="!settingsReady" class="warn-msg">
         ⚠ 检测到配置不完整，请先到
         <RouterLink :to="{ name: 'settings' }">设置页</RouterLink>
-        填写 SCF 端点配置（URL + API Key）
+        填写 SCF 端点配置（URL + API Key）；本地导入日志无需配置
       </p>
     </section>
 
@@ -106,7 +165,7 @@ onActivated(() => {
           @click="router.push({ name: 'analyze', query: { id: report.reportId, issue: report.issueNumber } })"
         >
           <span class="report-issue">
-            {{ report.issueNumber ? `#${report.issueNumber}` : '—' }}
+            {{ report.issueNumber ? `#${report.issueNumber}` : (report.appName ? '本地' : '—') }}
           </span>
           <span class="report-title">{{ report.issueTitle ?? (report.reportId ? report.reportId.slice(0, 8) : '—') }}</span>
           <span class="report-count">{{ report.logCount }} 条</span>
@@ -149,6 +208,45 @@ onActivated(() => {
 
 .search {
   margin-bottom: 2.5rem;
+}
+
+.import-row {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin-top: 0.625rem;
+}
+
+.import-btn {
+  padding: 0.375rem 0.875rem;
+  background-color: var(--color-surface);
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
+  font-size: 0.8125rem;
+  transition: all var(--transition-fast);
+}
+
+.import-btn:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.import-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.import-hint {
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+}
+
+/* 拖拽悬停时整页高亮提示可放置 */
+.home--drag {
+  outline: 2px dashed var(--color-primary);
+  outline-offset: -8px;
+  border-radius: var(--radius-md);
 }
 
 .remote-issues {

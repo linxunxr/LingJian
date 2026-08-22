@@ -18,6 +18,7 @@ export function levelColorVar(level: LogLevel): string {
     case 'WARN':
       return 'var(--color-warning)'
     case 'ERROR':
+    case 'FATAL':
       return 'var(--color-danger)'
   }
 }

@@ -99,6 +99,11 @@ function formatData(data: unknown): string {
   background-color: var(--color-danger);
   color: #fff;
 }
+.level-fatal {
+  background-color: var(--color-danger);
+  color: #fff;
+  outline: 1px solid var(--color-danger);
+}
 
 .detail-block {
   display: grid;

@@ -4,13 +4,14 @@ import { invoke } from '@tauri-apps/api/core'
 import type {
   AnalysisResult,
   DownloadResult,
+  ImportResult,
   IssueInfo,
   LogFilter,
   Report,
 } from '@/types'
 import { settings } from './useSettings'
 
-type Stage = 'idle' | 'parsing' | 'downloading' | 'analyzing' | 'done'
+type Stage = 'idle' | 'parsing' | 'downloading' | 'analyzing' | 'importing' | 'done'
 
 interface AnalysisState {
   stage: Stage
@@ -114,6 +115,32 @@ export async function runAnalysis(input: string): Promise<void> {
   }
 }
 
+/** 导入本地日志文件：读取 → 解析 → 入库，成功后可直接分析 */
+export async function importLocalFile(path: string): Promise<void> {
+  state.error = null
+  state.stage = 'importing'
+  state.issue = null
+  state.download = null
+  state.result = null
+
+  try {
+    const imported = await invoke<ImportResult>('import_log_file', { path })
+    state.reportId = imported.reportId
+    // 借用 download 槽位展示导入摘要（条数/文件大小/格式）
+    state.download = {
+      reportId: imported.reportId,
+      logCount: imported.logCount,
+      fileSize: imported.fileSize,
+    }
+    state.stage = 'analyzing'
+    await refreshAnalysis()
+    state.stage = 'done'
+  } catch (e) {
+    state.error = typeof e === 'string' ? e : String(e)
+    state.stage = 'idle'
+  }
+}
+
 /** 用当前 filter 重新分析（过滤变更时调用） */
 export async function refreshAnalysis(): Promise<void> {
   if (!state.reportId) return
@@ -141,6 +168,7 @@ export function useAnalysis() {
     state: readonly(state),
     filter,
     runAnalysis,
+    importLocalFile,
     refreshAnalysis,
     resetAnalysis,
   }

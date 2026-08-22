@@ -1,4 +1,4 @@
-export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR'
+export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR' | 'FATAL'
 
 export interface LogEntry {
   timestamp: string
@@ -68,6 +68,8 @@ export interface Report {
   reportId: string
   issueNumber?: number
   issueTitle?: string
+  /** 来源应用名（本地导入的鸿蒙 App 日志标注；Issue 流程为空） */
+  appName?: string
   appVersion?: string
   platform?: string
   realm?: string
@@ -76,6 +78,16 @@ export interface Report {
   reportTime: string
   logCount: number
   downloadedAt: string
+}
+
+export interface ImportResult {
+  reportId: string
+  logCount: number
+  fileSize: number
+  /** 识别出的日志格式：hlog-text / json */
+  format: string
+  /** 从文件名推断的应用名（baseName） */
+  appName?: string | null
 }
 
 export interface DownloadResult {
@@ -109,6 +121,7 @@ export interface LevelCounts {
   info: number
   warn: number
   error: number
+  fatal: number
 }
 
 export interface TagCount {

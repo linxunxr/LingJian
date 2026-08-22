@@ -293,6 +293,9 @@ onUnmounted(() => {
         <span class="stat info">INFO {{ result.levelCounts.info }}</span>
         <span class="stat warn">WARN {{ result.levelCounts.warn }}</span>
         <span class="stat error">ERROR {{ result.levelCounts.error }}</span>
+        <span v-if="result.levelCounts.fatal > 0" class="stat error">
+          FATAL {{ result.levelCounts.fatal }}
+        </span>
       </section>
 
       <Timeline :points="result.timeline" />
