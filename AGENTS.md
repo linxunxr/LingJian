@@ -47,7 +47,3 @@ Path of Idle Immortals 日志分析工具 — 独立桌面应用（Tauri 2 + Vue
 npm run tauri dev    # 开发模式
 npm run tauri build  # 构建发布
 ```
-
----
-
-*最后更新：2026-06-09*
