@@ -84,9 +84,14 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
-        .setup(|app| match init_state(app) {
-            Ok(state) => app.manage(state),
-            Err(msg) => fatal(app.handle(), msg),
+        .setup(|app| {
+            match init_state(app) {
+                Ok(state) => {
+                    app.manage(state);
+                }
+                Err(msg) => fatal(app.handle(), msg),
+            }
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             issue::parse_issue_url,
