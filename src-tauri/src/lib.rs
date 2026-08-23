@@ -26,6 +26,56 @@ pub struct AppState {
     pub fallback_dir: PathBuf,
 }
 
+/// 装配全局状态；任一步失败返回带路径上下文的错误信息
+fn init_state(app: &tauri::App) -> Result<AppState, String> {
+    // 系统默认目录（C 盘），仅用于存放 data_dir.txt 标记文件
+    let fallback_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("无法获取应用数据目录：{e}"))?;
+    std::fs::create_dir_all(&fallback_dir)
+        .map_err(|e| format!("无法创建应用目录（{}）：{e}", fallback_dir.display()))?;
+
+    // 解析生效数据目录：优先 exe 同级 data/，无写权限则降级到 fallback
+    let data_dir = paths::resolve_data_dir(&fallback_dir);
+    std::fs::create_dir_all(&data_dir)
+        .map_err(|e| format!("无法创建数据目录（{}）：{e}", data_dir.display()))?;
+
+    let cache_dir = data_dir.join("cache");
+    std::fs::create_dir_all(&cache_dir)
+        .map_err(|e| format!("无法创建缓存目录（{}）：{e}", cache_dir.display()))?;
+
+    let db_path = data_dir.join("lingjian.db");
+    let cache = Cache::open(&db_path)
+        .map_err(|e| format!("无法打开数据库（{}）：{e}", db_path.display()))?;
+
+    let client = reqwest::Client::builder()
+        .user_agent(format!("LingJian/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| format!("无法创建 HTTP 客户端：{e}"))?;
+
+    Ok(AppState {
+        client,
+        cache: Arc::new(cache),
+        cache_dir,
+        data_dir,
+        fallback_dir,
+    })
+}
+
+/// 启动致命错误：弹错误提示框，用户关闭后退出应用。
+/// 不能用 expect/panic——GUI 进程 panic 只会白屏，用户看不到原因；
+/// 弹窗任务要等事件循环启动后才显示，因此 setup 仍返回 Ok 让主循环跑起来。
+fn fatal(app: &tauri::AppHandle, msg: String) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+    let handle = app.clone();
+    app.dialog()
+        .message(msg)
+        .title("灵鉴启动失败")
+        .kind(MessageDialogKind::Error)
+        .show(move |_| handle.exit(1));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -34,37 +84,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
-        .setup(|app| {
-            // 系统默认目录（C 盘），仅用于存放 data_dir.txt 标记文件
-            let fallback_dir = app
-                .path()
-                .app_data_dir()
-                .expect("无法获取应用数据目录");
-            std::fs::create_dir_all(&fallback_dir).expect("无法创建应用目录");
-
-            // 解析生效数据目录：优先 exe 同级 data/，无写权限则降级到 fallback
-            let data_dir = paths::resolve_data_dir(&fallback_dir);
-            std::fs::create_dir_all(&data_dir).expect("无法创建数据目录");
-
-            let cache_dir = data_dir.join("cache");
-            std::fs::create_dir_all(&cache_dir).expect("无法创建缓存目录");
-
-            let db_path = data_dir.join("lingjian.db");
-            let cache = Arc::new(Cache::open(&db_path).expect("无法打开数据库"));
-
-            let client = reqwest::Client::builder()
-                .user_agent(format!("LingJian/{}", env!("CARGO_PKG_VERSION")))
-                .build()
-                .expect("无法创建 HTTP 客户端");
-
-            app.manage(AppState {
-                client,
-                cache,
-                cache_dir,
-                data_dir,
-                fallback_dir,
-            });
-            Ok(())
+        .setup(|app| match init_state(app) {
+            Ok(state) => app.manage(state),
+            Err(msg) => fatal(app.handle(), msg),
         })
         .invoke_handler(tauri::generate_handler![
             issue::parse_issue_url,
