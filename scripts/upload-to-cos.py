@@ -27,6 +27,12 @@
   /latest.json              ← 永远根目录（Tauri updater endpoint 固定）
   /<version>/xxx.exe        ← 安装包按版本归档
   /<version>/xxx.exe.sig
+
+版本清理：
+  每次上传完成后自动清理旧版本目录，仅保留最近 KEEP_VERSIONS 个
+  （latest.json 在根目录不受影响；当前最新版本一定在保留区内）。
+  COS 生命周期规则只能按天数滚动、无法按版本个数保留，故在脚本内实现。
+  清理失败仅告警、不阻断发布（历史产物在 GitHub Release 永久留档，可随时重新镜像）。
 """
 import os
 import sys
@@ -53,6 +59,11 @@ SMALL_FILE_THRESHOLD = 1024 * 1024  # ≤1MB 用简单上传（put_object），�
 #   - 第 1 次起就走加速域名（不再先试普通域名浪费时间）
 #   - 加速连续失败 FALLBACK_THRESHOLD 次后，回退普通地域域名兜底（极少触发）
 FALLBACK_THRESHOLD = 3
+
+# COS 版本目录保留数：上传完成后清理更旧的版本目录。
+# 取 10 的依据：本项目发版频繁（两个月 16 版），10 个 ≈ 3~4 周回滚窗口，
+# 足以覆盖"发布数日后才被发现"的坏版本回滚；体积约 800MB，成本可忽略。
+KEEP_VERSIONS = 10
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger('upload-to-cos')
@@ -271,6 +282,92 @@ def upload_one(client, bucket, local_path, cos_key, file_idx=None, plain_client=
     return False
 
 
+def list_version_prefixes(client, bucket):
+    """
+    列出桶根目录下所有版本目录（v 开头的 CommonPrefixes）。
+
+    用 Delimiter='/' 让 COS 按一级"目录"聚合返回，无需逐对象扫描。
+    非 v 开头的目录（人工放置的其他内容）原样跳过，绝不参与清理。
+    """
+    prefixes = []
+    marker = ''
+    while True:
+        resp = client.list_objects(Bucket=bucket, Prefix='', Delimiter='/', Marker=marker)
+        for cp in resp.get('CommonPrefixes', []):
+            p = cp.get('Prefix', '')
+            if p.startswith('v') and p.endswith('/'):
+                prefixes.append(p)
+        if resp.get('IsTruncated') in ('true', 'True', True):
+            marker = resp.get('NextMarker', '')
+        else:
+            break
+    return prefixes
+
+
+def version_sort_key(prefix):
+    """
+    版本目录语义化排序键。
+
+    v0.10.0 必须大于 v0.9.1——字符串排序会把 'v0.10.0' 排在 'v0.9.1' 之前导致删错，
+    解析为数字元组比较。pre-release 后缀（首个 '-' 起，如 -beta.1）整体切掉，
+    避免其内部 '.' 被误切成额外数字段；同号 pre-release < 正式版（semver 约定）。
+    """
+    v = prefix.strip('/').lstrip('v')
+    main, sep, _prerelease = v.partition('-')
+    parts = []
+    for seg in main.split('.'):
+        parts.append(int(seg) if seg.isdigit() else 0)
+    # semver：同号 pre-release < 正式版，故正式版取 True 排更大
+    return (tuple(parts), not sep)
+
+
+def delete_prefix_objects(client, bucket, prefix):
+    """删除某版本目录下全部对象（分页列举 + 每批 1000 个批量删除）。"""
+    deleted = 0
+    marker = ''
+    while True:
+        resp = client.list_objects(Bucket=bucket, Prefix=prefix, Marker=marker)
+        contents = resp.get('Contents', [])
+        if contents:
+            keys = [obj['Key'] for obj in contents]
+            batch = [{'Key': k} for k in keys]
+            del_resp = client.delete_objects(
+                Bucket=bucket, Delete={'Object': batch, 'Quiet': True}
+            )
+            errors = del_resp.get('Error', [])
+            if errors:
+                # 不用 CosServiceError：其构造签名随 SDK 版本变化，普通异常足够
+                raise RuntimeError(f'批量删除失败: {errors}')
+            deleted += len(keys)
+        if resp.get('IsTruncated') in ('true', 'True', True):
+            marker = resp.get('NextMarker', '')
+        else:
+            break
+    return deleted
+
+
+def cleanup_old_versions(client, bucket, keep=KEEP_VERSIONS):
+    """
+    清理超出保留数的最旧版本目录。
+
+    只动 v 开头的版本目录；latest.json 是根对象，Prefix 聚合不到它，
+    当前最新版本一定排在保留区内，均无被误删风险。
+    """
+    prefixes = list_version_prefixes(client, bucket)
+    if len(prefixes) <= keep:
+        logger.info(f'🧹 版本清理：当前 {len(prefixes)} 个版本目录 ≤ 保留 {keep} 个，无需清理')
+        return
+
+    prefixes.sort(key=version_sort_key)
+    outdated = prefixes[:-keep] if keep > 0 else prefixes
+    kept = ', '.join(p.strip('/') for p in prefixes[len(prefixes) - keep:])
+    logger.info(f'🧹 版本清理：保留最近 {keep} 个（{kept}），删除 {len(outdated)} 个旧版本')
+
+    for prefix in outdated:
+        count = delete_prefix_objects(client, bucket, prefix)
+        logger.info(f'  🗑 已删除 {prefix}（{count} 个对象）')
+
+
 def main():
     if len(sys.argv) < 3:
         print(f'用法: {sys.argv[0]} <dist-dir> <version>', file=sys.stderr)
@@ -328,6 +425,13 @@ def main():
         sys.exit(1)
 
     logger.info(f'✓ COS 同步完成（{len(files)} 个文件）')
+
+    # 上传成功后清理旧版本目录。清理是维护性动作：失败只告警不阻断发布
+    # （历史产物在 GitHub Release 永久留档，必要时可重新镜像）。
+    try:
+        cleanup_old_versions(client, bucket)
+    except Exception as e:
+        logger.warning(f'⚠ 旧版本清理失败（不影响本次发布）: {e}')
 
 
 if __name__ == '__main__':
