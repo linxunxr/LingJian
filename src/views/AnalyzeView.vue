@@ -8,6 +8,8 @@ import LogTable from '@/components/LogTable.vue'
 import LogDetail from '@/components/LogDetail.vue'
 import Timeline from '@/components/Timeline.vue'
 import ErrorAggregates from '@/components/ErrorAggregates.vue'
+import CommentDialog from '@/components/CommentDialog.vue'
+import LabelDialog from '@/components/LabelDialog.vue'
 import { useAnalysis } from '@/composables/useAnalysis'
 import { useIssues } from '@/composables/useIssues'
 import { settings } from '@/composables/useSettings'
@@ -29,8 +31,6 @@ const exportBusy = ref<ExportFormat | null>(null)
 const exportMessage = ref<string | null>(null)
 
 // ---- Issue 操作（从首页最近分析进入时，issue 号由路由 query 带入） ----
-/** 预设标签（与 IssueList 保持一致） */
-const PRESET_LABELS = ['已修复', '无法复现', '高优先级', '待验证'] as const
 
 /** 当前 report 对应的 issue 号（无则不可操作） */
 const issueNumber = computed(() => {
@@ -50,13 +50,9 @@ const currentLabels = computed<string[]>(() => issueInfo.value?.labels ?? [])
 
 const openMenu = ref(false)
 
-/** 评论对话框 */
-const commentTarget = ref(false)
-const commentText = ref('')
-
-/** 标签对话框 */
-const labelTarget = ref(false)
-const labelDraft = ref<string[]>([])
+/** 评论/标签对话框（内容与提交逻辑在对话框组件内） */
+const commentOpen = ref(false)
+const labelOpen = ref(false)
 
 /** 加载 issue 真实信息（state/labels），用于操作按钮文案与标签回填 */
 async function loadIssueInfo(number: number) {
@@ -88,41 +84,17 @@ async function onToggleState(number: number) {
 
 function openComment() {
   openMenu.value = false
-  commentTarget.value = true
-  commentText.value = ''
-}
-
-async function submitComment() {
-  if (!issueNumber.value || !commentText.value.trim()) return
-  const ok = await actOnIssue(issueNumber.value, 'comment', { body: commentText.value.trim() })
-  if (ok) {
-    commentTarget.value = false
-    commentText.value = ''
-  }
+  commentOpen.value = true
 }
 
 function openLabels() {
   openMenu.value = false
-  labelTarget.value = true
-  // 用 issue 真实标签初始化 draft（而非空数组，避免每次编辑丢失已有标签）
-  labelDraft.value = [...currentLabels.value]
+  labelOpen.value = true
 }
 
-function togglePresetLabel(label: string) {
-  const idx = labelDraft.value.indexOf(label)
-  if (idx >= 0) labelDraft.value.splice(idx, 1)
-  else labelDraft.value.push(label)
-}
-
-async function submitLabels() {
-  if (!issueNumber.value) return
-  const ok = await actOnIssue(issueNumber.value, 'setLabels', { labels: labelDraft.value })
-  if (ok) {
-    // 乐观更新本地 issueInfo.labels
-    if (issueInfo.value) issueInfo.value.labels = [...labelDraft.value]
-    labelTarget.value = false
-    labelDraft.value = []
-  }
+/** 标签保存成功后乐观更新本地 issueInfo.labels */
+function onLabelsSaved(labels: string[]) {
+  if (issueInfo.value) issueInfo.value.labels = labels
 }
 
 /** 点页面其他位置关闭菜单 */
@@ -172,8 +144,8 @@ watch(
     }
     // 重置 Issue 操作的本地状态（避免残留上一份报告的菜单/对话框/状态）
     openMenu.value = false
-    commentTarget.value = false
-    labelTarget.value = false
+    commentOpen.value = false
+    labelOpen.value = false
     issueInfo.value = null
   },
 )
@@ -329,57 +301,20 @@ onUnmounted(() => {
     </div>
 
     <!-- 评论对话框 -->
-    <div v-if="commentTarget" class="dialog-overlay" @click.self="commentTarget = false">
-      <div class="dialog">
-        <h4 class="dialog-title">
-          添加评论 · #{{ issueNumber }}
-        </h4>
-        <textarea
-          v-model="commentText"
-          class="dialog-textarea"
-          placeholder="输入评论内容（支持 Markdown）..."
-          rows="4"
-          autofocus
-        />
-        <div class="dialog-actions">
-          <button class="ghost-btn" @click="commentTarget = false">取消</button>
-          <button class="primary-btn" :disabled="!commentText.trim()" @click="submitComment">
-            提交
-          </button>
-        </div>
-      </div>
-    </div>
+    <CommentDialog
+      v-if="commentOpen && issueNumber"
+      :issue-number="issueNumber"
+      @close="commentOpen = false"
+    />
 
     <!-- 标签对话框 -->
-    <div v-if="labelTarget" class="dialog-overlay" @click.self="labelTarget = false">
-      <div class="dialog">
-        <h4 class="dialog-title">管理标签 · #{{ issueNumber }}</h4>
-        <div class="label-editor">
-          <p class="label-section-title">快速切换</p>
-          <div class="preset-labels">
-            <label
-              v-for="lab in PRESET_LABELS"
-              :key="lab"
-              :class="['preset-label', { checked: labelDraft.includes(lab) }]"
-            >
-              <input
-                type="checkbox"
-                :checked="labelDraft.includes(lab)"
-                @change="togglePresetLabel(lab)"
-              />
-              {{ lab }}
-            </label>
-          </div>
-          <p class="label-section-title">当前全部标签</p>
-          <p class="label-current">{{ labelDraft.length ? labelDraft.join('、') : '（无）' }}</p>
-          <p class="label-hint">预设标签为切换开关；当前列表为整体替换结果（提交后覆盖远端）</p>
-        </div>
-        <div class="dialog-actions">
-          <button class="ghost-btn" @click="labelTarget = false">取消</button>
-          <button class="primary-btn" @click="submitLabels">保存</button>
-        </div>
-      </div>
-    </div>
+    <LabelDialog
+      v-if="labelOpen && issueNumber"
+      :issue-number="issueNumber"
+      :labels="currentLabels"
+      @close="labelOpen = false"
+      @saved="onLabelsSaved"
+    />
   </div>
 </template>
 
@@ -639,145 +574,5 @@ onUnmounted(() => {
   font-size: 1rem;
   cursor: pointer;
   line-height: 1;
-}
-
-/* 对话框 */
-.dialog-overlay {
-  position: fixed;
-  inset: 0;
-  background-color: rgba(0, 0, 0, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 200;
-}
-
-.dialog {
-  width: 460px;
-  max-width: 90vw;
-  background-color: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-md);
-  padding: 1.25rem 1.5rem;
-}
-
-.dialog-title {
-  font-size: 0.95rem;
-  font-weight: 600;
-  color: var(--color-text);
-  margin-bottom: 0.875rem;
-}
-
-.dialog-textarea {
-  width: 100%;
-  padding: 0.625rem 0.75rem;
-  background-color: var(--color-bg);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  color: var(--color-text);
-  font-size: 0.8125rem;
-  font-family: var(--font-mono);
-  resize: vertical;
-  min-height: 80px;
-}
-
-.dialog-textarea:focus {
-  outline: none;
-  border-color: var(--color-primary);
-}
-
-.dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.625rem;
-  margin-top: 1rem;
-}
-
-.ghost-btn {
-  padding: 0.4rem 0.875rem;
-  background: transparent;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  color: var(--color-text-muted);
-  font-size: 0.8125rem;
-}
-
-.ghost-btn:hover {
-  color: var(--color-text);
-}
-
-.primary-btn {
-  padding: 0.4rem 1rem;
-  background-color: var(--color-primary);
-  color: #fff;
-  border: none;
-  border-radius: var(--radius-sm);
-  font-size: 0.8125rem;
-  font-weight: 500;
-}
-
-.primary-btn:hover:not(:disabled) {
-  background-color: var(--color-primary-hover);
-}
-
-.primary-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-/* 标签编辑器 */
-.label-editor {
-  font-size: 0.8125rem;
-}
-
-.label-section-title {
-  font-size: 0.75rem;
-  color: var(--color-text-muted);
-  margin: 0.5rem 0 0.375rem;
-}
-
-.preset-labels {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.preset-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.25rem 0.625rem;
-  background-color: var(--color-bg);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  font-size: 0.75rem;
-  color: var(--color-text-muted);
-  cursor: pointer;
-  user-select: none;
-}
-
-.preset-label.checked {
-  background-color: var(--color-primary);
-  border-color: var(--color-primary);
-  color: #fff;
-}
-
-.preset-label input[type='checkbox'] {
-  margin: 0;
-  accent-color: currentColor;
-}
-
-.label-current {
-  font-size: 0.8125rem;
-  color: var(--color-text);
-  margin: 0.25rem 0;
-}
-
-.label-hint {
-  font-size: 0.7rem;
-  color: var(--color-text-muted);
-  margin-top: 0.5rem;
-  line-height: 1.5;
 }
 </style>

@@ -6,6 +6,9 @@ import { settings } from './useSettings'
 
 type IssueState = 'open' | 'closed' | 'all'
 
+/** 预设标签（一期硬编码，后续可配置化；IssueList 与 AnalyzeView 共用） */
+export const PRESET_LABELS = ['已修复', '无法复现', '高优先级', '待验证'] as const
+
 interface IssuesState {
   /** 当前列表（跨页累积） */
   issues: IssueListItem[]

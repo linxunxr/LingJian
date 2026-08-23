@@ -3,6 +3,9 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useIssues } from '@/composables/useIssues'
 import { isSettingsComplete } from '@/composables/useSettings'
 import { formatTime } from '@/utils/format'
+import CommentDialog from './CommentDialog.vue'
+import LabelDialog from './LabelDialog.vue'
+import CloseIssueDialog from './CloseIssueDialog.vue'
 
 const emit = defineEmits<{
   /** 点击某个 Issue（行本身），传出编号 */
@@ -14,22 +17,15 @@ const { state, loadIssues, switchState, loadMore, actOnIssue, clearActionError }
 /** SCF 端点是否已配置（未配置时列表区显示引导空态，而非整块空白） */
 const configured = computed(() => isSettingsComplete())
 
-/** 预设标签（一期硬编码，后续可配置化） */
-const PRESET_LABELS = ['已修复', '无法复现', '高优先级', '待验证'] as const
-
 /** 当前展开菜单的 Issue 编号（null = 全部收起） */
 const openMenu = ref<number | null>(null)
 
-/** 对话框仅需 number 标识目标，避免持有 readonly 列表项 */
-const commentTarget = ref<{ number: number } | null>(null)
-const commentText = ref('')
+/** 评论对话框目标（仅需编号，内容与提交在 CommentDialog 内） */
+const commentTarget = ref<number | null>(null)
 
-const labelTarget = ref<{ number: number } | null>(null)
-const labelDraft = ref<string[]>([])
-
-/** 关闭确认对话框 */
+/** 标签/关闭确认对话框目标（需携带当前标签供草稿回填/版本标签追加） */
+const labelTarget = ref<{ number: number; labels: readonly string[] } | null>(null)
 const closeTarget = ref<{ number: number; labels: readonly string[] } | null>(null)
-const resolveVersion = ref('')
 
 function onSelect(number: number) {
   if (openMenu.value !== null) {
@@ -48,88 +44,24 @@ function closeMenu() {
   openMenu.value = null
 }
 
-/** 关闭/重开 */
+/** 关闭/重开：重开直接执行；关闭走 CloseIssueDialog 填版本号 */
 function onToggleState(number: number, issueState: string, labels: readonly string[] = []) {
   closeMenu()
   if (issueState === 'closed') {
-    // 重开：直接执行，无需版本号
     actOnIssue(number, 'reopen')
     return
   }
-  // 关闭：弹出确认对话框，填入解决版本号后执行 close + 标签 + 评论
   closeTarget.value = { number, labels }
-  resolveVersion.value = ''
 }
 
-/** 确认关闭：串行 close → setLabels → comment */
-async function confirmClose() {
-  if (!closeTarget.value || !resolveVersion.value.trim()) return
-  const { number, labels } = closeTarget.value
-  const version = resolveVersion.value.trim()
-  const tagLabel = `v${version.replace(/^v/, '')}`
-
-  // 1) 关闭 Issue —— 失败则保留弹窗让用户重试
-  const ok = await actOnIssue(number, 'close')
-  if (!ok) return
-
-  // 2) 追加版本标签 + 3) 解决评论 —— 后续步骤失败不阻断关弹窗
-  //    （Issue 已关闭是主目标，标签/评论失败仅作次要，错误会进 actionError 横幅）
-  try {
-    const base = Array.isArray(labels) ? labels : []
-    const newLabels = [...new Set([...base, tagLabel])]
-    await actOnIssue(number, 'setLabels', { labels: newLabels })
-    await actOnIssue(number, 'comment', { body: `已在挂机仙途 ${tagLabel} 中标记为已处理` })
-  } finally {
-    // 无论后续步骤成败，Issue 已关闭，弹窗必须关闭
-    closeTarget.value = null
-    resolveVersion.value = ''
-  }
-}
-
-/** 打开评论对话框 */
 function openComment(number: number) {
   closeMenu()
-  commentTarget.value = { number }
-  commentText.value = ''
+  commentTarget.value = number
 }
 
-async function submitComment() {
-  if (!commentTarget.value || !commentText.value.trim()) return
-  const ok = await actOnIssue(commentTarget.value.number, 'comment', {
-    body: commentText.value.trim(),
-  })
-  if (ok) {
-    commentTarget.value = null
-    commentText.value = ''
-  }
-}
-
-/** 打开标签编辑（加载当前标签到 draft） */
 function openLabels(number: number, labels: readonly string[] = []) {
   closeMenu()
-  labelTarget.value = { number }
-  // 当前标签拷贝一份（预设区只勾选匹配项，提交时整体替换）
-  labelDraft.value = [...labels]
-}
-
-function togglePresetLabel(label: string) {
-  const idx = labelDraft.value.indexOf(label)
-  if (idx >= 0) {
-    labelDraft.value.splice(idx, 1)
-  } else {
-    labelDraft.value.push(label)
-  }
-}
-
-async function submitLabels() {
-  if (!labelTarget.value) return
-  const ok = await actOnIssue(labelTarget.value.number, 'setLabels', {
-    labels: labelDraft.value,
-  })
-  if (ok) {
-    labelTarget.value = null
-    labelDraft.value = []
-  }
+  labelTarget.value = { number, labels }
 }
 
 /** 点页面其他位置关闭菜单 */
@@ -255,82 +187,27 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
     </div>
 
     <!-- 评论对话框 -->
-    <div v-if="commentTarget" class="dialog-overlay" @click.self="commentTarget = null">
-      <div class="dialog">
-        <h4 class="dialog-title">添加评论 · #{{ commentTarget.number }}</h4>
-        <textarea
-          v-model="commentText"
-          class="dialog-textarea"
-          placeholder="输入评论内容（支持 Markdown）..."
-          rows="4"
-          autofocus
-        />
-        <div class="dialog-actions">
-          <button class="ghost-btn" @click="commentTarget = null">取消</button>
-          <button class="primary-btn" :disabled="!commentText.trim()" @click="submitComment">
-            提交
-          </button>
-        </div>
-      </div>
-    </div>
+    <CommentDialog
+      v-if="commentTarget !== null"
+      :issue-number="commentTarget"
+      @close="commentTarget = null"
+    />
 
     <!-- 标签对话框 -->
-    <div v-if="labelTarget" class="dialog-overlay" @click.self="labelTarget = null">
-      <div class="dialog">
-        <h4 class="dialog-title">管理标签 · #{{ labelTarget.number }}</h4>
-        <div class="label-editor">
-          <p class="label-section-title">快速切换</p>
-          <div class="preset-labels">
-            <label
-              v-for="lab in PRESET_LABELS"
-              :key="lab"
-              :class="['preset-label', { checked: labelDraft.includes(lab) }]"
-            >
-              <input
-                type="checkbox"
-                :checked="labelDraft.includes(lab)"
-                @change="togglePresetLabel(lab)"
-              />
-              {{ lab }}
-            </label>
-          </div>
-          <p class="label-section-title">当前全部标签</p>
-          <p class="label-current">{{ labelDraft.length ? labelDraft.join('、') : '（无）' }}</p>
-          <p class="label-hint">预设标签为切换开关；当前列表为整体替换结果（提交后覆盖远端）</p>
-        </div>
-        <div class="dialog-actions">
-          <button class="ghost-btn" @click="labelTarget = null">取消</button>
-          <button class="primary-btn" @click="submitLabels">保存</button>
-        </div>
-      </div>
-    </div>
+    <LabelDialog
+      v-if="labelTarget"
+      :issue-number="labelTarget.number"
+      :labels="labelTarget.labels"
+      @close="labelTarget = null"
+    />
 
     <!-- 关闭确认对话框 -->
-    <div v-if="closeTarget" class="dialog-overlay" @click.self="closeTarget = null">
-      <div class="dialog">
-        <h4 class="dialog-title">关闭 Issue · #{{ closeTarget.number }}</h4>
-        <p class="close-hint">
-          输入解决的挂机仙途版本号（如 0.9.19），关闭后将自动添加版本标签和评论。
-        </p>
-        <div class="close-input-row">
-          <span class="version-prefix">v</span>
-          <input
-            v-model="resolveVersion"
-            type="text"
-            class="version-input"
-            placeholder="0.9.19"
-            autofocus
-            @keyup.enter="confirmClose"
-          />
-        </div>
-        <div class="dialog-actions">
-          <button class="ghost-btn" @click="closeTarget = null">取消</button>
-          <button class="primary-btn" :disabled="!resolveVersion.trim()" @click="confirmClose">
-            确认关闭
-          </button>
-        </div>
-      </div>
-    </div>
+    <CloseIssueDialog
+      v-if="closeTarget"
+      :issue-number="closeTarget.number"
+      :labels="closeTarget.labels"
+      @close="closeTarget = null"
+    />
   </section>
 </template>
 
@@ -636,186 +513,5 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
 .load-more-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-}
-
-/* 对话框 */
-.dialog-overlay {
-  position: fixed;
-  inset: 0;
-  background-color: rgba(0, 0, 0, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 200;
-}
-
-.dialog {
-  width: 460px;
-  max-width: 90vw;
-  background-color: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-md);
-  padding: 1.25rem 1.5rem;
-}
-
-.dialog-title {
-  font-size: 0.95rem;
-  font-weight: 600;
-  color: var(--color-text);
-  margin-bottom: 0.875rem;
-}
-
-.dialog-textarea {
-  width: 100%;
-  padding: 0.625rem 0.75rem;
-  background-color: var(--color-bg);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  color: var(--color-text);
-  font-size: 0.8125rem;
-  font-family: var(--font-mono);
-  resize: vertical;
-  min-height: 80px;
-}
-
-.dialog-textarea:focus {
-  outline: none;
-  border-color: var(--color-primary);
-}
-
-.dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.625rem;
-  margin-top: 1rem;
-}
-
-.ghost-btn {
-  padding: 0.4rem 0.875rem;
-  background: transparent;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  color: var(--color-text-muted);
-  font-size: 0.8125rem;
-}
-
-.ghost-btn:hover {
-  color: var(--color-text);
-}
-
-.primary-btn {
-  padding: 0.4rem 1rem;
-  background-color: var(--color-primary);
-  color: #fff;
-  border: none;
-  border-radius: var(--radius-sm);
-  font-size: 0.8125rem;
-  font-weight: 500;
-}
-
-.primary-btn:hover:not(:disabled) {
-  background-color: var(--color-primary-hover);
-}
-
-.primary-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-/* 标签编辑器 */
-.label-editor {
-  font-size: 0.8125rem;
-}
-
-.label-section-title {
-  font-size: 0.75rem;
-  color: var(--color-text-muted);
-  margin: 0.5rem 0 0.375rem;
-}
-
-.preset-labels {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.preset-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.25rem 0.625rem;
-  background-color: var(--color-bg);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  font-size: 0.75rem;
-  color: var(--color-text-muted);
-  cursor: pointer;
-  user-select: none;
-}
-
-.preset-label.checked {
-  background-color: var(--color-primary);
-  border-color: var(--color-primary);
-  color: #fff;
-}
-
-.preset-label input[type='checkbox'] {
-  margin: 0;
-  accent-color: currentColor;
-}
-
-.label-current {
-  font-size: 0.8125rem;
-  color: var(--color-text);
-  margin: 0.25rem 0;
-}
-
-.label-hint {
-  font-size: 0.7rem;
-  color: var(--color-text-muted);
-  margin-top: 0.5rem;
-  line-height: 1.5;
-}
-
-/* 关闭确认对话框 */
-.close-hint {
-  font-size: 0.8125rem;
-  color: var(--color-text-muted);
-  margin-bottom: 0.875rem;
-  line-height: 1.5;
-}
-
-.close-input-row {
-  display: flex;
-  align-items: center;
-  gap: 0;
-}
-
-.version-prefix {
-  padding: 0.5rem 0.625rem;
-  background-color: var(--color-surface-alt);
-  border: 1px solid var(--color-border);
-  border-right: none;
-  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
-  color: var(--color-text-muted);
-  font-size: 0.875rem;
-  font-family: var(--font-mono);
-}
-
-.version-input {
-  flex: 1;
-  padding: 0.5rem 0.75rem;
-  background-color: var(--color-bg);
-  border: 1px solid var(--color-border);
-  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-  color: var(--color-text);
-  font-size: 0.875rem;
-  font-family: var(--font-mono);
-}
-
-.version-input:focus {
-  outline: none;
-  border-color: var(--color-primary);
 }
 </style>

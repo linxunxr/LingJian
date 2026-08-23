@@ -87,3 +87,38 @@ button {
 ::-webkit-scrollbar-thumb:hover {
   background-color: var(--color-text-muted);
 }
+
+/* 通用对话框按钮（AppDialog footer slot 内容使用，slot 内容不吃 scoped 样式） */
+.ghost-btn {
+  padding: 0.4rem 0.875rem;
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.ghost-btn:hover {
+  color: var(--color-text);
+}
+
+.primary-btn {
+  padding: 0.4rem 1rem;
+  background-color: var(--color-primary);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.primary-btn:hover:not(:disabled) {
+  background-color: var(--color-primary-hover);
+}
+
+.primary-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
