@@ -46,4 +46,6 @@ Path of Idle Immortals 日志分析工具 — 独立桌面应用（Tauri 2 + Vue
 ```bash
 npm run tauri dev    # 开发模式
 npm run tauri build  # 构建发布
+npm test             # 前端单元测试（vitest，含组件测试）
+cargo test --lib     # Rust 后端单元测试（src-tauri/ 目录下）
 ```
