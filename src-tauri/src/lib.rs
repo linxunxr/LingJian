@@ -53,7 +53,7 @@ pub fn run() {
             let cache = Arc::new(Cache::open(&db_path).expect("无法打开数据库"));
 
             let client = reqwest::Client::builder()
-                .user_agent("LingJian/0.1")
+                .user_agent(format!("LingJian/{}", env!("CARGO_PKG_VERSION")))
                 .build()
                 .expect("无法创建 HTTP 客户端");
 
