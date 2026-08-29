@@ -356,4 +356,4 @@ git push origin v0.2.0
 
 ## 许可证
 
-私有项目，未公开发布。
+[MIT](LICENSE) © linxunxr
