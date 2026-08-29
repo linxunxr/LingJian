@@ -118,3 +118,35 @@ jobs:
           # 用官方 SDK 上传（分块 + 断点续传 + 重试，针对跨洲链路加固）
           # 产物按版本归档到 /<version>/ 子目录，latest.json 留根目录
           python scripts/upload-to-cos.py dist "${{ github.ref_name }}"
+
+  # 同步发行版到 Gitee（国内镜像：tag + changelog + 安装包附件全自动）
+  # Gitee 仓库代码由其自带的 GitHub 镜像同步跟进，本 job 只补发行版。
+  # 令牌未配置（GITEE_TOKEN 缺失）时脚本自动跳过，不阻断发布。
+  sync-to-gitee:
+    needs: publish
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Download all release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p dist
+          gh release download "${{ github.ref_name }}" \
+            --repo linxunxr/LingJian \
+            --dir dist \
+            --clobber
+
+      - name: Sync release to Gitee
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GITEE_OWNER: mwcxlinxun
+          GITEE_REPO: ling-jian
+        run: node scripts/sync-release-to-gitee.mjs dist "${{ github.ref_name }}"
