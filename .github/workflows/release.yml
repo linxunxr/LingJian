@@ -99,7 +99,7 @@ jobs:
 
       # GitHub 兜底源：latest.github.json 重命名为 latest.json 上传到 Release
       # assets，客户端经 releases/latest/download/latest.json 拉取（updater
-      # 第二端点）。上传后从 dist 移除，避免被下一步 COS 脚本重复上传。
+      # 第三端点）。上传后从 dist 移除，避免被下一步 COS 脚本重复上传。
       - name: Upload GitHub-fallback manifest to Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -109,6 +109,11 @@ jobs:
           gh release upload "${{ github.ref_name }}" gh-manifest/latest.json \
             --repo linxunxr/LingJian --clobber
           rm dist/latest.github.json
+
+      # Gitee 清单与发行版附件的同步统一收敛在 sync-to-gitee job，
+      # 此处只删清单副本，避免被 COS 脚本当安装包上传。
+      - name: Remove Gitee manifest from dist
+        run: rm -f dist/latest.gitee.json
 
       - name: Install COS Python SDK
         run: pip install cos-python-sdk-v5
@@ -124,9 +129,12 @@ jobs:
           # 产物按版本归档到 /<version>/ 子目录，latest.json 留根目录
           python scripts/upload-to-cos.py dist "${{ github.ref_name }}"
 
-  # 同步发行版到 Gitee（国内镜像：tag + changelog + 安装包附件全自动）
-  # Gitee 仓库代码由其自带的 GitHub 镜像同步跟进，本 job 只补发行版。
-  # 令牌未配置（GITEE_TOKEN 缺失）时脚本自动跳过，不阻断发布。
+  # 同步发行版与更新清单到 Gitee（国内镜像 + updater 第二端点）
+  #   - 发行版：tag + changelog + 安装包附件（API 创建 + attach_files 上传）
+  #   - 更新清单：latest.gitee.json 提交到仓库根作 latest.json
+  #     （Gitee 无 latest/download 固定地址，客户端经仓库 raw 地址拉取）
+  # Gitee 仓库代码由其自带的 GitHub 镜像同步跟进，本 job 只补发行版与清单。
+  # 令牌未配置（GITEE_TOKEN 缺失）时两个脚本均自动跳过，不阻断发布。
   sync-to-gitee:
     needs: publish
     runs-on: ubuntu-22.04
@@ -149,9 +157,16 @@ jobs:
             --dir dist \
             --clobber
 
-      - name: Sync release to Gitee
+      - name: Generate Gitee manifest
+        run: node scripts/generate-latest-json.mjs dist "${{ github.ref_name }}"
+
+      - name: Sync release and manifest to Gitee
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           GITEE_OWNER: mwcxlinxun
           GITEE_REPO: ling-jian
-        run: node scripts/sync-release-to-gitee.mjs dist "${{ github.ref_name }}"
+        run: |
+          # 清单提交失败不阻断（可在 Gitee 网页补更），发行版同步内部已做容错
+          node scripts/sync-latest-to-gitee.mjs dist/latest.gitee.json || \
+            echo '⚠ Gitee 清单提交失败（不阻断）'
+          node scripts/sync-release-to-gitee.mjs dist "${{ github.ref_name }}"

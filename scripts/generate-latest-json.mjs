@@ -12,12 +12,15 @@
  *       按文件名特征映射到 Tauri 平台 key。同时从 CHANGELOG.md 提取对应
  *       版本日志写入 notes。
  *
- * 双清单输出（updater 双端点容灾，两端清单里的下载 url 各指其源）：
+ * 三清单输出（updater 三端点容灾，各清单里的下载 url 各指其源）：
  *   latest.json          → url 指向 COS（上传到 COS 根目录，主更新源）
  *   latest.github.json   → url 指向 GitHub Release 永久地址（上传到
  *                          Release assets，重命名为 latest.json，兜底更新源；
- *                          客户端通过 releases/latest/download/latest.json 拉取）
- *   两份清单除 platforms.*.url 外完全一致（版本、签名、notes 同源生成）。
+ *                          客户端经 releases/latest/download/latest.json 拉取）
+ *   latest.gitee.json    → url 指向 Gitee Release tag 固定直链（CI 用 Gitee
+ *                          API 提交到仓库根作为 latest.json，国内兜底源；
+ *                          Gitee 无 latest/download 固定地址，故走仓库文件）
+ *   三份清单除 platforms.*.url 外完全一致（版本、签名、notes 同源生成）。
  *
  * 用法: node scripts/generate-latest-json.mjs <path/to/dist-dir> <version>
  *
@@ -38,6 +41,8 @@ const CHANGELOG_PATH = resolve(__dirname, '..', 'CHANGELOG.md')
 const COS_BASE = 'https://lingjian-releases-1433733625.cos.ap-guangzhou.myqcloud.com'
 // GitHub Release 固定下载地址（latest 永远重定向到最新 tag 的同名 asset）
 const GITHUB_BASE = 'https://github.com/linxunxr/LingJian/releases/latest/download'
+// Gitee Release tag 固定直链（Gitee 无 latest/download 固定地址，url 需带本次 tag）
+const GITEE_BASE = 'https://gitee.com/mwcxlinxun/ling-jian/releases/download'
 
 const distDir = process.argv[2]
 const version = process.argv[3]
@@ -142,6 +147,8 @@ for (const sigFile of sigFiles) {
     url: `${COS_BASE}/${normalizedVersion}/${assetName}`,
     // GitHub 兜底源的同平台产物（Release assets 永久地址）
     githubUrl: `${GITHUB_BASE}/${encodeURIComponent(assetName)}`,
+    // Gitee 国内源的同平台产物（Release tag 固定直链）
+    giteeUrl: `${GITEE_BASE}/${normalizedVersion}/${encodeURIComponent(assetName)}`,
   }
   console.log(`✓ ${platform} ← ${assetName}`)
   used++
@@ -167,9 +174,9 @@ if (existsSync(CHANGELOG_PATH)) {
   console.warn('⚠ 未找到 CHANGELOG.md，使用默认 notes')
 }
 
-// 3. 拼装并写入双清单
-//    先构建带 githubUrl 的内部结构，再分别导出两份：
-//    COS 版 url 取 .url，GitHub 版 url 取 .githubUrl（导出时剔除该临时字段）
+// 3. 拼装并写入三清单
+//    先构建带 githubUrl/giteeUrl 的内部结构，再分别导出三份：
+//    COS 版 url 取 .url，GitHub 版取 .githubUrl，Gitee 版取 .giteeUrl
 const makeManifest = (urlKey) => ({
   version: bareVersion,
   notes,
@@ -181,13 +188,17 @@ const makeManifest = (urlKey) => ({
 
 const cosManifest = makeManifest('url')
 const githubManifest = makeManifest('githubUrl')
+const giteeManifest = makeManifest('giteeUrl')
 
 const cosOutPath = join(distDir, 'latest.json')
 writeFileSync(cosOutPath, JSON.stringify(cosManifest, null, 2) + '\n', 'utf-8')
 const ghOutPath = join(distDir, 'latest.github.json')
 writeFileSync(ghOutPath, JSON.stringify(githubManifest, null, 2) + '\n', 'utf-8')
+const giteeOutPath = join(distDir, 'latest.gitee.json')
+writeFileSync(giteeOutPath, JSON.stringify(giteeManifest, null, 2) + '\n', 'utf-8')
 
 console.log(`\n✓ 已生成 ${cosOutPath}（COS 主源）`)
 console.log(`✓ 已生成 ${ghOutPath}（GitHub 兜底源，发布时重命名为 latest.json 上传 Release assets）`)
+console.log(`✓ 已生成 ${giteeOutPath}（Gitee 国内源，CI 提交到 Gitee 仓库根作为 latest.json）`)
 console.log(`  版本: ${bareVersion} | 平台数: ${used}`)
 console.log(`  platforms: ${Object.keys(platforms).join(', ')}`)
