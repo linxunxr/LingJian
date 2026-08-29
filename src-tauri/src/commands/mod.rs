@@ -3,6 +3,7 @@ pub mod download;
 pub mod export_;
 pub mod import;
 pub mod issue;
+pub mod mcp;
 pub mod reports;
 pub mod secret;
 pub mod settings;
