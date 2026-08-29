@@ -6,6 +6,18 @@
 
 ---
 
+## v0.2.3 - 2026-08-29
+
+### 新增
+- **开源协议**：项目以 MIT 协议开源，补 LICENSE 文件与 package.json / Cargo.toml license 字段
+- **Gitee 国内镜像**：源码镜像至 [gitee.com/mwcxlinxun/ling-jian](https://gitee.com/mwcxlinxun/ling-jian)；每次发版自动创建 Gitee 发行版（更新日志 + 各平台安装包附件），国内用户可直接下载
+- **更新链路三源容灾**：自动更新检查顺序升级为 Gitee → GitHub → 腾讯云 COS，任一源不可用自动切换下一源（本版本发布后下一版本起对存量用户生效）
+
+### 优化
+- **安装包文件名统一**：GitHub Release / COS / Gitee 三端产物名统一为 `LingJian_版本_架构` 前缀（如 `LingJian_0.2.3_x64-setup.exe`），修复此前 GitHub 端文件名残缺（缺应用名前缀）的问题
+
+---
+
 ## v0.2.2 - 2026-08-29
 
 ### 新增
