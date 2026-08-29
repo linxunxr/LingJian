@@ -9,8 +9,15 @@
  *
  * 策略：扫描 dist/*.sig，每个 .sig 对应的安装包即为更新器产物
  *       （createUpdaterArtifacts 控制只有更新产物才生成 .sig），
- *       按文件名特征映射到 Tauri 平台 key，URL 直接拼成 COS 地址。
- *       同时从 CHANGELOG.md 提取对应版本日志写入 notes。
+ *       按文件名特征映射到 Tauri 平台 key。同时从 CHANGELOG.md 提取对应
+ *       版本日志写入 notes。
+ *
+ * 双清单输出（updater 双端点容灾，两端清单里的下载 url 各指其源）：
+ *   latest.json          → url 指向 COS（上传到 COS 根目录，主更新源）
+ *   latest.github.json   → url 指向 GitHub Release 永久地址（上传到
+ *                          Release assets，重命名为 latest.json，兜底更新源；
+ *                          客户端通过 releases/latest/download/latest.json 拉取）
+ *   两份清单除 platforms.*.url 外完全一致（版本、签名、notes 同源生成）。
  *
  * 用法: node scripts/generate-latest-json.mjs <path/to/dist-dir> <version>
  *
@@ -29,6 +36,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const CHANGELOG_PATH = resolve(__dirname, '..', 'CHANGELOG.md')
 // COS 访问域名（普通地域域名，全球加速已关闭）
 const COS_BASE = 'https://lingjian-releases-1433733625.cos.ap-guangzhou.myqcloud.com'
+// GitHub Release 固定下载地址（latest 永远重定向到最新 tag 的同名 asset）
+const GITHUB_BASE = 'https://github.com/linxunxr/LingJian/releases/latest/download'
 
 const distDir = process.argv[2]
 const version = process.argv[3]
@@ -131,6 +140,8 @@ for (const sigFile of sigFiles) {
     signature,
     // 版本分目录：产物按版本归档到 /v0.1.x/ 下，避免所有版本混在根目录
     url: `${COS_BASE}/${normalizedVersion}/${assetName}`,
+    // GitHub 兜底源的同平台产物（Release assets 永久地址）
+    githubUrl: `${GITHUB_BASE}/${encodeURIComponent(assetName)}`,
   }
   console.log(`✓ ${platform} ← ${assetName}`)
   used++
@@ -156,17 +167,27 @@ if (existsSync(CHANGELOG_PATH)) {
   console.warn('⚠ 未找到 CHANGELOG.md，使用默认 notes')
 }
 
-// 3. 拼装并写入 latest.json
-const manifest = {
+// 3. 拼装并写入双清单
+//    先构建带 githubUrl 的内部结构，再分别导出两份：
+//    COS 版 url 取 .url，GitHub 版 url 取 .githubUrl（导出时剔除该临时字段）
+const makeManifest = (urlKey) => ({
   version: bareVersion,
   notes,
   pub_date: new Date().toISOString(),
-  platforms,
-}
+  platforms: Object.fromEntries(
+    Object.entries(platforms).map(([key, p]) => [key, { signature: p.signature, url: p[urlKey] }]),
+  ),
+})
 
-const outPath = join(distDir, 'latest.json')
-writeFileSync(outPath, JSON.stringify(manifest, null, 2) + '\n', 'utf-8')
+const cosManifest = makeManifest('url')
+const githubManifest = makeManifest('githubUrl')
 
-console.log(`\n✓ 已生成 ${outPath}`)
+const cosOutPath = join(distDir, 'latest.json')
+writeFileSync(cosOutPath, JSON.stringify(cosManifest, null, 2) + '\n', 'utf-8')
+const ghOutPath = join(distDir, 'latest.github.json')
+writeFileSync(ghOutPath, JSON.stringify(githubManifest, null, 2) + '\n', 'utf-8')
+
+console.log(`\n✓ 已生成 ${cosOutPath}（COS 主源）`)
+console.log(`✓ 已生成 ${ghOutPath}（GitHub 兜底源，发布时重命名为 latest.json 上传 Release assets）`)
 console.log(`  版本: ${bareVersion} | 平台数: ${used}`)
 console.log(`  platforms: ${Object.keys(platforms).join(', ')}`)

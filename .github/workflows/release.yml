@@ -1,8 +1,8 @@
 name: Release
 
 # 推送 v* 格式的 tag 时触发发布。
-# 仓库为私有，GitHub Release 资源不可匿名访问，因此客户端更新只走腾讯云 COS：
-#   构建 → 发 Release（产物中转）→ 镜像到 COS（对用户分发）。
+# 仓库为公开，分发链路双源：
+#   构建 → 发 GitHub Release（产物留档 + 兜底更新源）→ 镜像到腾讯云 COS（国内主更新源）。
 # 更新日志由 inject-changelog.mjs 从 CHANGELOG.md 提取，写入 latest.json 的 notes 字段。
 on:
   push:
@@ -91,6 +91,19 @@ jobs:
 
       - name: Generate latest.json from assets
         run: node scripts/generate-latest-json.mjs dist "${{ github.ref_name }}"
+
+      # GitHub 兜底源：latest.github.json 重命名为 latest.json 上传到 Release
+      # assets，客户端经 releases/latest/download/latest.json 拉取（updater
+      # 第二端点）。上传后从 dist 移除，避免被下一步 COS 脚本重复上传。
+      - name: Upload GitHub-fallback manifest to Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p gh-manifest
+          cp dist/latest.github.json gh-manifest/latest.json
+          gh release upload "${{ github.ref_name }}" gh-manifest/latest.json \
+            --repo linxunxr/LingJian --clobber
+          rm dist/latest.github.json
 
       - name: Install COS Python SDK
         run: pip install cos-python-sdk-v5
