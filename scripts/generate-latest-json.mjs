@@ -12,15 +12,16 @@
  *       按文件名特征映射到 Tauri 平台 key。同时从 CHANGELOG.md 提取对应
  *       版本日志写入 notes。
  *
- * 三清单输出（updater 三端点容灾，各清单里的下载 url 各指其源）：
- *   latest.json          → url 指向 COS（上传到 COS 根目录，主更新源）
+ * 双清单输出（updater 双端点，各清单里的下载 url 各指其源）：
  *   latest.github.json   → url 指向 GitHub Release 永久地址（上传到
- *                          Release assets，重命名为 latest.json，兜底更新源；
+ *                          Release assets，重命名为 latest.json，第二更新源；
  *                          客户端经 releases/latest/download/latest.json 拉取）
  *   latest.gitee.json    → url 指向 Gitee Release tag 固定直链（CI 用 Gitee
- *                          API 提交到仓库根作为 latest.json，国内兜底源；
+ *                          API 提交到仓库根作为 latest.json，国内主更新源；
  *                          Gitee 无 latest/download 固定地址，故走仓库文件）
- *   三份清单除 platforms.*.url 外完全一致（版本、签名、notes 同源生成）。
+ *   两份清单除 platforms.*.url 外完全一致（版本、签名、notes 同源生成）。
+ *   （腾讯云 COS 已于 v0.2.4 退役；桶保留至存量用户经 COS latest.json
+ *    升级到 v0.2.3+ 后在控制台销毁）
  *
  * 用法: node scripts/generate-latest-json.mjs <path/to/dist-dir> <version>
  *
@@ -37,8 +38,6 @@ import { exit } from 'node:process'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const CHANGELOG_PATH = resolve(__dirname, '..', 'CHANGELOG.md')
-// COS 访问域名（普通地域域名，全球加速已关闭）
-const COS_BASE = 'https://lingjian-releases-1433733625.cos.ap-guangzhou.myqcloud.com'
 // GitHub Release 固定下载地址（latest 永远重定向到最新 tag 的同名 asset）
 const GITHUB_BASE = 'https://github.com/linxunxr/LingJian/releases/latest/download'
 // Gitee Release tag 固定直链（Gitee 无 latest/download 固定地址，url 需带本次 tag）
@@ -143,8 +142,6 @@ for (const sigFile of sigFiles) {
   const signature = readFileSync(join(distDir, sigFile), 'utf-8').trim()
   platforms[platform] = {
     signature,
-    // 版本分目录：产物按版本归档到 /v0.1.x/ 下，避免所有版本混在根目录
-    url: `${COS_BASE}/${normalizedVersion}/${assetName}`,
     // GitHub 兜底源的同平台产物（Release assets 永久地址）
     githubUrl: `${GITHUB_BASE}/${encodeURIComponent(assetName)}`,
     // Gitee 国内源的同平台产物（Release tag 固定直链）
@@ -174,9 +171,10 @@ if (existsSync(CHANGELOG_PATH)) {
   console.warn('⚠ 未找到 CHANGELOG.md，使用默认 notes')
 }
 
-// 3. 拼装并写入三清单
-//    先构建带 githubUrl/giteeUrl 的内部结构，再分别导出三份：
-//    COS 版 url 取 .url，GitHub 版取 .githubUrl，Gitee 版取 .giteeUrl
+// 3. 拼装并写入双清单
+//    先构建带 githubUrl/giteeUrl 的内部结构，再分别导出两份：
+//    GitHub 版 url 取 .githubUrl，Gitee 版 url 取 .giteeUrl
+//    （COS 已于 v0.2.4 退役，不再生成 COS 清单）
 const makeManifest = (urlKey) => ({
   version: bareVersion,
   notes,
@@ -186,19 +184,15 @@ const makeManifest = (urlKey) => ({
   ),
 })
 
-const cosManifest = makeManifest('url')
 const githubManifest = makeManifest('githubUrl')
 const giteeManifest = makeManifest('giteeUrl')
 
-const cosOutPath = join(distDir, 'latest.json')
-writeFileSync(cosOutPath, JSON.stringify(cosManifest, null, 2) + '\n', 'utf-8')
 const ghOutPath = join(distDir, 'latest.github.json')
 writeFileSync(ghOutPath, JSON.stringify(githubManifest, null, 2) + '\n', 'utf-8')
 const giteeOutPath = join(distDir, 'latest.gitee.json')
 writeFileSync(giteeOutPath, JSON.stringify(giteeManifest, null, 2) + '\n', 'utf-8')
 
-console.log(`\n✓ 已生成 ${cosOutPath}（COS 主源）`)
-console.log(`✓ 已生成 ${ghOutPath}（GitHub 兜底源，发布时重命名为 latest.json 上传 Release assets）`)
-console.log(`✓ 已生成 ${giteeOutPath}（Gitee 国内源，CI 提交到 Gitee 仓库根作为 latest.json）`)
+console.log(`\n✓ 已生成 ${ghOutPath}（GitHub 第二源，发布时重命名为 latest.json 上传 Release assets）`)
+console.log(`✓ 已生成 ${giteeOutPath}（Gitee 国内主源，CI 提交到 Gitee 仓库根作为 latest.json）`)
 console.log(`  版本: ${bareVersion} | 平台数: ${used}`)
 console.log(`  platforms: ${Object.keys(platforms).join(', ')}`)
