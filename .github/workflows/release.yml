@@ -52,8 +52,8 @@ jobs:
 
       - name: Build and publish
         # 固定到主干 commit：v0 标签（2026-03）不含 releaseAssetNamePattern
-        # 支持，参数会被静默忽略导致 asset 名残缺
-        uses: tauri-apps/tauri-action@abbd19ad15
+        # 支持，参数会被静默忽略导致 asset 名残缺（GitHub 要求完整 40 位 SHA）
+        uses: tauri-apps/tauri-action@abbd19ad15b37f89667db9cc46ec1cb5419f22be
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # 签名密钥（GitHub Secrets 中配置）
