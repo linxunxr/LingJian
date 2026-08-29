@@ -27,6 +27,10 @@
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { exit } from 'node:process'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+
+const execFileAsync = promisify(execFile)
 
 const GITEE_API = 'https://gitee.com/api/v5'
 const OWNER = process.env.GITEE_OWNER || 'mwcxlinxun'
@@ -168,26 +172,45 @@ for (const file of files) {
     continue
   }
 
-  const buf = readFileSync(join(distDir, file))
+  const filePath = join(distDir, file)
+  const sizeMB = statSync(filePath).size / 1024 / 1024
   let done = false
   for (let attempt = 1; attempt <= UPLOAD_RETRY && !done; attempt++) {
     try {
-      const form = new FormData()
-      form.append('file', new Blob([buf]), basename(file))
-      await gitee(`/repos/${OWNER}/${REPO}/releases/${release.id}/attach_files`, {
-        method: 'POST',
-        body: form,
-      })
-      console.log(`✓ ${file}（${(buf.length / 1024 / 1024).toFixed(1)}MB）`)
+      // 大文件走 curl 子进程：CI runner 的 Node undici 对大 multipart body
+      // 存在断连问题（v0.2.3 实测 7MB+ 全部 fetch failed、KB 级小文件正常），
+      // curl -F 无此问题且对代理/重试更健壮；小文件仍走 fetch 保持零依赖快路径
+      if (statSync(filePath).size > 1024 * 1024) {
+        const { stdout } = await execFileAsync('curl', [
+          '-sS', '--fail-with-body', '--max-time', '600',
+          '-X', 'POST',
+          '-H', `Authorization: token ${token}`,
+          '-F', `file=@${filePath}`,
+          `${GITEE_API}/repos/${OWNER}/${REPO}/releases/${release.id}/attach_files`,
+        ])
+        if (!stdout.includes('"id"') && stdout.trim()) {
+          // Gitee 成功返回 JSON 含 id 字段；其余内容打出来辅助排查
+          console.warn(`  ? ${file} 响应异常: ${stdout.slice(0, 120)}`)
+        }
+      } else {
+        const form = new FormData()
+        form.append('file', new Blob([readFileSync(filePath)]), basename(file))
+        await gitee(`/repos/${OWNER}/${REPO}/releases/${release.id}/attach_files`, {
+          method: 'POST',
+          body: form,
+        })
+      }
+      console.log(`✓ ${file}（${sizeMB.toFixed(1)}MB）`)
       done = true
       ok++
       uploaded++
     } catch (e) {
+      const msg = e.stderr?.toString().trim() || e.message
       if (attempt < UPLOAD_RETRY) {
-        console.warn(`  ✗ ${file} 第 ${attempt} 次失败: ${e.message}，重试...`)
+        console.warn(`  ✗ ${file} 第 ${attempt} 次失败: ${msg}，重试...`)
         await new Promise((r) => setTimeout(r, attempt * 3000))
       } else {
-        console.warn(`  ✗ ${file} 上传失败（跳过，不阻断）: ${e.message}`)
+        console.warn(`  ✗ ${file} 上传失败（跳过，不阻断）: ${msg}`)
         failed++
       }
     }

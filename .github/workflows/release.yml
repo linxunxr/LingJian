@@ -51,7 +51,9 @@ jobs:
         run: npm ci
 
       - name: Build and publish
-        uses: tauri-apps/tauri-action@v0
+        # 固定到主干 commit：v0 标签（2026-03）不含 releaseAssetNamePattern
+        # 支持，参数会被静默忽略导致 asset 名残缺
+        uses: tauri-apps/tauri-action@abbd19ad15
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # 签名密钥（GitHub Secrets 中配置）
@@ -74,6 +76,9 @@ jobs:
   mirror-to-cos:
     needs: publish
     runs-on: ubuntu-22.04
+    # gh release upload 上传 GitHub 兜底清单需要写权限（v0.2.3 曾因缺此声明 403）
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
