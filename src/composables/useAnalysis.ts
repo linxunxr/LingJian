@@ -99,6 +99,8 @@ export async function runAnalysis(input: string): Promise<void> {
             appVersion: issueInfo.appVersion,
             platform: issueInfo.platform,
             realm: issueInfo.realm,
+            userDescription: issueInfo.userDescription,
+            playTime: issueInfo.playTime != null ? Number(issueInfo.playTime) : undefined,
           }
         : null,
     })

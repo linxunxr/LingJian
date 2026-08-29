@@ -15,6 +15,10 @@ pub struct IssueMeta {
     pub app_version: Option<String>,
     pub platform: Option<String>,
     pub realm: Option<String>,
+    /// 用户反馈文本（落库 user_description，分析页展示）
+    pub user_description: Option<String>,
+    /// 游玩时长秒数（SCF 返回字符串，此处解析为数字落库）
+    pub play_time: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -34,7 +38,7 @@ pub async fn download_log(
     report_id: String,
     scf_url: String,
     api_key: String,
-    #[allow(unused_variables)] issue_meta: Option<IssueMeta>,
+    issue_meta: Option<IssueMeta>,
     state: State<'_, crate::AppState>,
 ) -> Result<DownloadResult, String> {
     if scf_url.trim().is_empty() || api_key.trim().is_empty() {
@@ -59,8 +63,8 @@ pub async fn download_log(
         app_version: issue_meta.as_ref().and_then(|m| m.app_version.clone()),
         platform: issue_meta.as_ref().and_then(|m| m.platform.clone()),
         realm: issue_meta.as_ref().and_then(|m| m.realm.clone()),
-        play_time: None,
-        user_description: None,
+        play_time: issue_meta.as_ref().and_then(|m| m.play_time),
+        user_description: issue_meta.as_ref().and_then(|m| m.user_description.clone()),
         report_time: now.clone(),
         log_count,
         downloaded_at: now,

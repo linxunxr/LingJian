@@ -10,12 +10,13 @@ import Timeline from '@/components/Timeline.vue'
 import ErrorAggregates from '@/components/ErrorAggregates.vue'
 import CommentDialog from '@/components/CommentDialog.vue'
 import LabelDialog from '@/components/LabelDialog.vue'
+import ReportMetaCard from '@/components/ReportMetaCard.vue'
 import { useAnalysis } from '@/composables/useAnalysis'
 import { useIssues } from '@/composables/useIssues'
 import { settings } from '@/composables/useSettings'
 import { exportReport, type ExportFormat } from '@/composables/useExport'
 import { formatBytes } from '@/utils/format'
-import type { AnalysisResult, IssueInfo, LogEntry, Report } from '@/types'
+import type { AnalysisResult, IssueInfo, LogEntry, Report, ReportMeta } from '@/types'
 
 const route = useRoute()
 const router = useRouter()
@@ -109,7 +110,35 @@ const currentReportId = computed(() => state.reportId ?? (route.query.id as stri
 
 /** 实际展示的分析结果（来自 useAnalysis 流程 或 单独加载的 report） */
 const result = computed(() => state.result ?? standaloneResult.value)
-const report = computed(() => standaloneReport.value ?? state.issue)
+
+/** 上报上下文卡片：优先 Issue 信息（完整流程或详情页拉取），本地导入回退落库 Report */
+const reportMeta = computed<ReportMeta | null>(() => {
+  const info = state.issue ?? issueInfo.value
+  if (info) {
+    return {
+      title: info.title || null,
+      userDescription: info.userDescription ?? null,
+      appName: null,
+      appVersion: info.appVersion ?? null,
+      platform: info.platform ?? null,
+      realm: info.realm ?? null,
+      playTime: info.playTime != null ? Number(info.playTime) : null,
+      reportTime: null,
+    }
+  }
+  const r = standaloneReport.value
+  if (!r) return null
+  return {
+    title: r.issueTitle ?? null,
+    userDescription: r.userDescription ?? null,
+    appName: r.appName ?? null,
+    appVersion: r.appVersion ?? null,
+    platform: r.platform ?? null,
+    realm: r.realm ?? null,
+    playTime: r.playTime ?? null,
+    reportTime: r.reportTime,
+  }
+})
 
 /** 详情面板空态概览（当前匹配条数 / 总量 / 首末时间） */
 const entrySummary = computed(() => {
@@ -156,15 +185,17 @@ watch(issueNumber, (n) => {
   else issueInfo.value = null
 })
 
-/** 单独加载某 report 的分析（从首页最近列表点进来） */
+/** 单独加载某 report 的分析（从首页最近列表点进来），同时取落库元信息供上报卡片展示 */
 async function loadReport(reportId: string) {
   loadingStandalone.value = true
   standaloneError.value = null
   try {
-    standaloneResult.value = await invoke<AnalysisResult>('analyze_log', {
-      reportId,
-      filter,
-    })
+    const [analysis, report] = await Promise.all([
+      invoke<AnalysisResult>('analyze_log', { reportId, filter }),
+      invoke<Report | null>('get_report', { reportId }),
+    ])
+    standaloneResult.value = analysis
+    standaloneReport.value = report
   } catch (e) {
     standaloneError.value = typeof e === 'string' ? e : String(e)
   } finally {
@@ -215,7 +246,7 @@ onUnmounted(() => {
     <header class="analyze-header">
       <button class="back-btn" @click="goHome">← 返回</button>
       <h2 class="analyze-title">
-        {{ report ? (state.issue ? `Issue #${state.issue.number}` : '日志分析') : '日志分析' }}
+        {{ state.issue ? `Issue #${state.issue.number}` : '日志分析' }}
       </h2>
       <span v-if="state.download" class="meta">
         {{ state.download.logCount }} 条 · {{ formatBytes(state.download.fileSize) }}
@@ -262,6 +293,9 @@ onUnmounted(() => {
 
     <p v-if="standaloneError" class="error-msg">{{ standaloneError }}</p>
     <p v-else-if="state.error" class="error-msg">{{ state.error }}</p>
+
+    <!-- 上报上下文：用户反馈 + 环境信息（Issue 流程或本地导入的落库记录） -->
+    <ReportMetaCard :meta="reportMeta" />
 
     <div v-if="loadingStandalone" class="loading">加载中...</div>
 

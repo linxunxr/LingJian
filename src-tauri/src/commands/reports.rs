@@ -24,3 +24,15 @@ pub async fn list_recent_reports(
             reports
         })
 }
+
+/// 查询单条上报记录的元信息（分析页展示用户反馈/环境信息用）
+#[tauri::command]
+pub async fn get_report(
+    report_id: String,
+    state: State<'_, crate::AppState>,
+) -> Result<Option<Report>, String> {
+    let cache: std::sync::Arc<Cache> = state.cache.clone();
+    spawn_blocking(move || cache.get_report(&report_id))
+        .await
+        .map_err(|e| format!("查询任务失败: {e}"))?
+}

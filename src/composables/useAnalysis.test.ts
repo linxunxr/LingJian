@@ -27,6 +27,8 @@ const issueInfo = {
   appVersion: '1.2.0',
   platform: 'windows',
   realm: 'realm-1',
+  userDescription: '战斗界面卡死，点技能没反应',
+  playTime: '3600',
 }
 
 /** download_log 返回跟随请求的 reportId，模拟后端按上报 ID 落库的行为 */
@@ -137,6 +139,8 @@ describe('runAnalysis', () => {
         appVersion: '1.2.0',
         platform: 'windows',
         realm: 'realm-1',
+        userDescription: '战斗界面卡死，点技能没反应',
+        playTime: 3600,
       },
     })
     expect(mockedInvoke).toHaveBeenCalledWith('analyze_log', {

@@ -29,6 +29,10 @@ export interface IssueInfo extends ParsedIssue {
   appVersion?: string
   platform?: string
   realm?: string
+  /** 用户反馈文本（SCF 从 Issue body「用户描述」小节提取；旧版 SCF 不返回） */
+  userDescription?: string
+  /** 游玩时长（秒，字符串形式；旧版 SCF 不返回） */
+  playTime?: string
 }
 
 /** 问题列表项（首页列表展示用） */
@@ -142,4 +146,19 @@ export interface AnalysisResult {
   timeline: TimelinePoint[]
   /** 错误聚合（基于过滤后 ERROR 日志） */
   errorAggregates: ErrorAggregate[]
+}
+
+/** 上报上下文卡片数据（Issue 流程取 IssueInfo，本地导入/最近分析取落库 Report） */
+export interface ReportMeta {
+  title: string | null
+  /** 用户反馈文本 */
+  userDescription: string | null
+  /** 来源应用名（本地导入的鸿蒙日志有值） */
+  appName: string | null
+  appVersion: string | null
+  platform: string | null
+  realm: string | null
+  /** 游玩时长（秒） */
+  playTime: number | null
+  reportTime: string | null
 }

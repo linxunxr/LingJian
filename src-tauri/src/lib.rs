@@ -103,6 +103,7 @@ pub fn run() {
             import::import_log_file,
             analyze::analyze_log,
             reports::list_recent_reports,
+            reports::get_report,
             export_::export_report,
             secret::set_secret,
             secret::get_secret,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { formatBytes, formatTime, levelClass, levelColorVar } from './format'
+import { formatBytes, formatDuration, formatTime, levelClass, levelColorVar } from './format'
 
 describe('formatTime', () => {
   it('格式化本地时间 ISO 字符串为可读格式', () => {
@@ -51,5 +51,27 @@ describe('formatBytes', () => {
   it('MB 档保留两位小数', () => {
     expect(formatBytes(1024 * 1024)).toBe('1.00 MB')
     expect(formatBytes(2.5 * 1024 * 1024)).toBe('2.50 MB')
+  })
+})
+
+describe('formatDuration', () => {
+  it('不足一分钟以秒显示', () => {
+    expect(formatDuration(0)).toBe('0秒')
+    expect(formatDuration(59)).toBe('59秒')
+  })
+
+  it('分钟档带剩余秒', () => {
+    expect(formatDuration(60)).toBe('1分')
+    expect(formatDuration(90)).toBe('1分30秒')
+  })
+
+  it('小时档带分钟，整小时不拖尾', () => {
+    expect(formatDuration(3600)).toBe('1小时')
+    expect(formatDuration(3720)).toBe('1小时2分')
+  })
+
+  it('非法输入显示占位符', () => {
+    expect(formatDuration(-1)).toBe('-')
+    expect(formatDuration(Number.NaN)).toBe('-')
   })
 })

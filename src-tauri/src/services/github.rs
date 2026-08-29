@@ -43,6 +43,12 @@ pub struct IssueInfo {
     pub platform: Option<String>,
     #[serde(default)]
     pub realm: Option<String>,
+    /// 用户反馈文本（SCF 从 Issue body「用户描述」小节提取；旧版 SCF 不返回）
+    #[serde(default)]
+    pub user_description: Option<String>,
+    /// 游玩时长（秒，body 环境表格提取，字符串形式；旧版 SCF 不返回）
+    #[serde(default)]
+    pub play_time: Option<String>,
 }
 
 /// Issue 列表项（SCF `/issues` 端点返回）
