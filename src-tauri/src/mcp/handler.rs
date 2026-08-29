@@ -220,6 +220,9 @@ impl LingjianServer {
     }
 }
 
-// get_info 由 #[tool_handler] 自动生成（server 名称/版本取自 Cargo.toml）
-#[tool_handler]
+// get_info 由 #[tool_handler] 生成，名称/引导语在此定制（version 宏属性不支持表达式，用默认值）
+#[tool_handler(
+    name = "lingjian",
+    instructions = "灵鉴（LingJian）日志分析工具。先用 list_issues 找到目标上报，再用 analyze_report 获取错误聚合与统计，query_logs 分页查看原始日志。"
+)]
 impl ServerHandler for LingjianServer {}
