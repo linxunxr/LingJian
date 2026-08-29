@@ -1,13 +1,14 @@
 # ZCode MCP 接入设计方案
 
-灵鉴通过 MCP（Model Context Protocol）把日志分析能力开放给 ZCode 等 AI 编码代理使用，形成"用户上报 → 灵鉴分析 → AI 定位修复 → 回写 Issue"的闭环。本文档是一期（只读能力）的实施依据，二期（写操作）仅做规划。
+灵鉴桌面端内嵌 MCP（Model Context Protocol）server，把日志分析能力开放给 ZCode 等 AI 编码代理使用，形成"用户上报 → 灵鉴分析 → AI 定位修复 → 回写 Issue"的闭环。桌面端设置页提供 MCP 配置界面（开关、端口、连接信息）。本文档是一期（只读能力）的实施依据，二期（写操作）仅做规划。
 
 ## 更新记录
 
-| 日期         | 变更内容                                                                 |
-|--------------|--------------------------------------------------------------------------|
-| 2026-08-29   | 补"MCP server 生命周期"小节：明确 stdio 形态由 ZCode 拉起，不依赖灵鉴桌面 |
-| 2026-08-29   | 初版：三方案对比、core 抽取、四只读工具契约、验收标准                     |
+| 日期       | 变更内容                                                                             |
+|------------|--------------------------------------------------------------------------------------|
+| 2026-08-29 | v2：形态改为桌面端托管——删独立进程与 core 抽取方案，新增设置页配置界面与 HTTP transport 设计 |
+| 2026-08-29 | 补"MCP server 生命周期"小节（stdio 形态，已被 v2 取代）                               |
+| 2026-08-29 | 初版：三方案对比、core 抽取、四只读工具契约、验收标准                                  |
 
 ## 1. 背景与方向选择
 
@@ -15,125 +16,128 @@
 
 打通这个断点评估过三种方向：
 
-| 方向               | 做法                                   | 结论                                        |
-|--------------------|----------------------------------------|---------------------------------------------|
-| 灵鉴推送（正向）   | 灵鉴按钮唤起 ZCode headless CLI        | 否决：桌面端 headless 引擎配置分裂未修通，链路长且单向 |
-| ZCode 拉库（反向） | ZCode 直接读 lingjian.db 自己算        | 可行但劣质：裸数据无语义、SQL 紧耦合表结构、分析逻辑重复实现 |
-| 能力开放（本方案） | 灵鉴做 MCP server，把分析能力封装成工具 | 采用：能力复用、契约解耦、可扩展到写操作      |
+| 方向               | 做法                                     | 结论                                              |
+|--------------------|------------------------------------------|---------------------------------------------------|
+| 灵鉴推送（正向）   | 灵鉴按钮唤起 ZCode headless CLI          | 否决：桌面端 headless 引擎配置分裂未修通，链路长且单向 |
+| ZCode 拉库（反向） | ZCode 直接读 lingjian.db 自己算          | 可行但劣质：裸数据无语义、SQL 紧耦合表结构、分析逻辑重复实现 |
+| 能力开放（本方案） | 灵鉴内嵌 MCP server，把分析能力封装成工具 | 采用：能力复用、契约解耦、配置集中在桌面端        |
 
 能力开放的判定依据：
 
-- 灵鉴的 `services` 层本就是无 Tauri 耦合的领域库（`analyzer.rs:9` 纯函数、`cache.rs` 以路径为参、`paths.rs` fallback 参数化），加一层协议适配即可开放，分析逻辑一份代码两端共用。
-- ZCode 原生支持 stdio MCP（用户级配置 `~/.zcode/cli/config.json` 的 `mcp.servers`），接入是配置级改动；本机已有 obsidian-kb（HTTP）、godot-mcp-pro（stdio）两个同类先例。
-- 契约即边界：灵鉴内部重构不影响消费方；后续还能把"回写评论/标签/关单"也开出去。
+- 灵鉴的 `services` 层本就是无 Tauri 耦合的领域库（`analyzer.rs:9` 纯函数、`cache.rs` 以路径为参），MCP handler 在进程内直接调用，分析逻辑一份代码两端共用。
+- ZCode 原生支持 HTTP MCP（用户级配置 `~/.zcode/cli/config.json` 的 `mcp.servers`，`type: http` + url），本机 obsidian-kb（`http://127.0.0.1:27124/mcp`）即此模式先例。
+- 契约即边界：MCP 工具的参数/返回结构固定后，灵鉴内部重构不影响消费方；后续还能把"回写评论/标签/关单"也开出去。
+
+### 托管形态 vs 独立进程形态
+
+MCP server 有两种宿主形态，本方案选**桌面端托管**：
+
+| 形态             | 做法                                | 本方案取舍                                        |
+|------------------|-------------------------------------|---------------------------------------------------|
+| 桌面端托管（采用） | 灵鉴运行时在本机端口起 HTTP MCP server，设置页配置 | 配置集中有 UI、开关可控；二期写操作可直接用进程内 keyring 凭证；代价是使用时灵鉴须在运行 |
+| 独立 stdio 进程  | 独立 exe 由 ZCode 按需拉起          | 不依赖灵鉴运行，但无配置界面、ZCode 侧手改配置、二期需凭证去 Tauri 化，v1 方案曾采用后被否 |
+
+"使用时灵鉴须在运行"与 obsidian-kb（开着才能查 vault）一致，是预期行为。
 
 ## 2. 总体架构
 
 ```
-┌─────────┐  stdio (JSON-RPC)   ┌──────────────────┐        ┌───────────────────┐
-│  ZCode   │ ◄────────────────► │ lingjian-mcp.exe │ ────── │ lingjian-core     │
-│ (任意会话) │    按需拉起/退出     │  (rmcp server)   │  复用  │  analyzer/cache/  │
-└─────────┘                     └──────────────────┘        │  paths + models   │
-                                                           └────────┬──────────┘
-┌─────────┐  进程内直接调用                                      │ 只读连接
-│ 灵鉴桌面端 │ ◄──────────────────────────────────────────────── ┘          ▼
-│ (Tauri)  │                                              D:\…\灵鉴\data\lingjian.db
-└─────────┘
+┌───────────────────────────────────────────────────────┐
+│ 灵鉴桌面端 (Tauri / lingjian_lib)                      │
+│                                                       │
+│  设置页 ── MCP 分区（开关/端口/连接信息）                │
+│     │ tauri command: mcp_set_config / mcp_status      │
+│     ▼                                                 │
+│  ┌─────────────────────────────┐    ┌──────────────┐ │      ┌─────────┐
+│  │ mcp 模块 (rmcp + axum)       │───►│ services 层   │ │      │  ZCode   │
+│  │ 4+N 个工具 handler            │    │ analyzer/cache│ │ ◄──► │ (AI 代理) │
+│  │ http://127.0.0.1:<port>/mcp  │    │ github(二期)  │ │ HTTP │ 任意会话  │
+│  └─────────────────────────────┘    └──────┬───────┘ │      └─────────┘
+│                                      Arc<Cache> 共享  │
+└───────────────────────────────────────│───────────────┘
+                                        ▼
+                              D:\…\灵鉴\data\lingjian.db
 ```
 
 分工：
 
-- **lingjian-core**（新 crate）：领域逻辑——日志解析、分析聚合、SQLite 读写、数据目录寻址。桌面端与 MCP server 共同依赖，唯一事实来源。
-- **lingjian-mcp**（新 crate，一期交付物）：stdio MCP server，薄封装 core 的只读能力，面向 LLM 控制响应体量。
-- **灵鉴桌面端**：不变。MCP server 是独立进程，不要求灵鉴在运行。
+- **mcp 模块**（`src-tauri/src/mcp/`，一期交付物）：rmcp Streamable HTTP server + 工具 handler，薄封装 services 层的只读能力，面向 LLM 控制响应体量。
+- **设置页 MCP 分区**（前端）：开关、端口配置、运行状态指示、连接 URL 与 ZCode 配置片段一键复制。
+- **services 层**：不动。MCP handler 进程内直接调用，与 Tauri command 层平级。
 
-### MCP server 生命周期（与灵鉴桌面无关）
+### MCP server 生命周期
 
-stdio 形态下 server 进程由 ZCode 托管，不依赖灵鉴桌面应用启动或常驻：
+server 随灵鉴应用进程生存：
 
-1. **拉起**：ZCode 会话首次调用灵鉴工具时，按 `mcp.servers` 配置 spawn `lingjian-mcp.exe` 子进程（同 godot-mcp-pro 的 `node index.js` 模式）；
-2. **通信**：stdin/stdout 上的 JSON-RPC，工具执行即读 `lingjian.db`（只读连接），不经过灵鉴进程的任何内存状态；
-3. **退出**：ZCode 会话结束，子进程随之退出。
+1. **启动**：应用 setup 阶段读取 settings，若 `mcpEnabled` 为 true 则 tokio::spawn 拉起 axum listener（绑定 127.0.0.1，端口默认 3920 可配）；
+2. **通信**：ZCode 按 `http://127.0.0.1:<port>/mcp` 发起 MCP Streamable HTTP 请求（JSON-RPC），handler 经 `Arc<Cache>`/analyzer 执行；
+3. **配置变更**：设置页修改开关/端口后，tauri command 停旧 listener、按新配置重启，即时生效无需重启应用；
+4. **退出**：随灵鉴进程退出自动结束，无残留端口占用。
 
-一次性前提：`cargo build --release` 构建出 `lingjian-mcp.exe` 并将路径写入 ZCode 配置（第 7 节）；后续可随灵鉴安装包分发。灵鉴桌面与 MCP server 同时运行不冲突（第 4.3 节并发策略）。
+## 3. 依赖与配置
 
-## 3. Workspace 重构：抽取 lingjian-core
+新增依赖（需评审通过后引入）：
 
-现状 `src-tauri` 是单 crate（lib 名 `lingjian_lib`，crate-type 含 `rlib`）。若让 MCP 直接依赖 `lingjian_lib`，会拖入整个 Tauri 依赖树（tauri-build、wry 等），编译重、产物大。因此先把领域逻辑抽为独立 crate。
+| 依赖 | features                                       | 用途                     |
+|------|------------------------------------------------|--------------------------|
+| rmcp | server, macros, transport-streamable-http-server | MCP 协议与 #[tool] 宏、HTTP 传输 |
+| axum | default                                        | 本机 HTTP listener        |
 
-目标结构（`src-tauri` 升为 workspace root，root package 即灵鉴本体）：
+（tokio 已随 reqwest/tauri 在依赖树中，不新增。）版本锁定原则：rmcp 与 schemars 大版本必须匹配（`Parameters<T>` 要求 `T: JsonSchema`），实现时以 rmcp 当时文档为准并锁定。
+
+配置存储（复用 tauri-plugin-store 的 `settings.json`，`useSettings.ts` 扩展）：
+
+| 键          | 类型    | 默认值 | 说明                         |
+|-------------|---------|--------|------------------------------|
+| mcpEnabled  | boolean | false  | MCP server 总开关            |
+| mcpPort     | number  | 3920   | 监听端口，仅绑定 127.0.0.1   |
+
+新增 tauri commands：`mcp_set_config(enabled, port)`（写 settings + 重启 listener，返回运行状态）、`mcp_status()`（返回 running/port/listeningUrl）。
+
+### 并发与安全
+
+- **SQLite 并发**：MCP handler 与下载写库共用同一 `Arc<Cache>`（内部 `Mutex<Connection>`），进程内天然互斥，无跨进程锁问题。
+- **网络边界**：仅绑定 127.0.0.1，不对外网暴露；一期无鉴权（与 obsidian-kb 同水位），token 鉴权随二期写操作一并评审。
+
+## 4. mcp 模块设计
+
+### 4.1 布局
 
 ```
-src-tauri/
-├── Cargo.toml          # [workspace] members = ["core", "mcp"]；本体 package lingjian
-├── core/               # 新：lingjian-core，无 tauri 依赖
-│   ├── Cargo.toml
-│   └── src/
-│       ├── lib.rs
-│       ├── models/     # log_entry.rs / report.rs / analyze.rs（自 src-tauri/src/models 迁入）
-│       ├── analyzer.rs # 自 services/analyzer.rs 迁入
-│       ├── cache.rs    # 自 services/cache.rs 迁入（include_str 路径同步调整）
-│       ├── paths.rs    # 自 services/paths.rs 迁入
-│       └── migrations/ # 001_init.sql 迁入
-├── mcp/                # 新：lingjian-mcp 二进制
-│   ├── Cargo.toml
-│   └── src/main.rs
-└── src/                # 灵鉴本体：commands/、剩余 services（github/download/exporter…）
+src-tauri/src/mcp/
+├── mod.rs        # server 启停管理：start/stop/restart，axum router 装配
+├── handler.rs    # LingjianServer：#[tool_router] 工具集 + ServerHandler impl
+└── dto.rs        # MCP 请求/响应结构体（derive schemars::JsonSchema）
 ```
 
-迁移约定：
+### 4.2 DTO 隔离
 
-- 迁移文件清单：`models/log_entry.rs`、`models/report.rs`、`models/analyze.rs`、`services/analyzer.rs`、`services/cache.rs`、`services/paths.rs`、`migrations/001_init.sql`。`services/github.rs`、`download.rs`、`exporter.rs` 依赖 reqwest/SCF/keyring，留在本体，二期再评估。
-- 本体引用改法：`lib.rs` 删掉对应 `pub mod`，改为 `pub use lingjian_core::{models, analyzer, cache, paths};` 式 re-export（具体模块布局实现时定），`commands/` 与前端 Tauri command 层的 `use crate::…` 路径不变或最小改动。
-- core 依赖仅：`serde`、`serde_json`、`rusqlite`（bundled）、`chrono`、`log`、`regex`（log_entry 解析若用到）。禁止依赖 tauri。
-- 单元测试随文件迁移（analyzer 4 例、paths 8 例等），迁移后 `cargo test --lib` 全绿为准；`src-tauri/Cargo.toml` 的 rusqlite/serde 等版本号同步下沉到 core，本体经 path 依赖传递。
+MCP 的请求/响应结构体在 mcp 模块内独立定义（derive `schemars::JsonSchema`），经 `From`/手写转换对接 models 层类型。models 不引入 schemars，保持零侵入。
 
-Tauri v2 支持 package 即 workspace root 的布局，`npm run tauri dev/build` 行为不变，需在验收时回归确认。
-
-## 4. lingjian-mcp 设计
-
-### 4.1 依赖
-
-| 依赖    | features                    | 用途                     |
-|---------|-----------------------------|--------------------------|
-| rmcp    | server, macros, transport-io | MCP 协议与 #[tool] 宏   |
-| tokio   | macros, rt-multi-thread     | 异步运行时               |
-| schemars| derive                      | 工具参数 JSON Schema     |
-| lingjian-core | path 依赖              | 领域逻辑                 |
-
-版本锁定原则：rmcp 与 schemars 大版本必须匹配（rmcp 的 `Parameters<T>` 要求 `T: JsonSchema`），实现时以 rmcp 当时文档标注的兼容版本为准，锁定后不再漂移。
-
-### 4.2 数据目录寻址
-
-优先级：环境变量 `LINGJIAN_DATA_DIR`（显式指定，测试用）→ 复用 `lingjian_core::paths::resolve_data_dir(fallback)`，fallback 取 `%APPDATA%\com.lingjian.app`。与桌面端完全同链（标记文件 `data_dir.txt` 优先），本机实测该链解析到 `D:\200software\219LingJian\灵鉴\data`。
-
-### 4.3 SQLite 并发策略
-
-- MCP 侧用只读连接：`Connection::open_with_flags(path, SQLITE_OPEN_READ_ONLY)` + `busy_timeout(2000)`，杜绝误写。
-- 灵鉴现有建库未开 WAL（默认 journal 模式，`cache.rs:16` 无 pragma）。只读 MCP 与桌面端写并发时靠 busy_timeout 扛短事务，一期够用；二期建议桌面端建库时执行 `PRAGMA journal_mode=WAL`（一次设置持久生效，读写不再互斥），随写操作工具一起评审。
-
-### 4.4 DTO 隔离
-
-MCP 的请求/响应结构体在 mcp crate 内独立定义（derive `schemars::JsonSchema`），经 `From`/手写转换对接 core 类型。core 不引入 schemars，保持零侵入。
-
-### 4.5 响应体量控制（面向 LLM 的关键约束）
+### 4.3 响应体量控制（面向 LLM 的关键约束）
 
 单份上报日志可达数百条（Issue #15 为 200 条），未来更多。分析结果若全量返回会撑爆模型上下文。约定：
 
-- 聚合类数据（error_aggregates、level_counts、tag_counts）默认全量——它们本来就是压缩后的。
+- 聚合类数据（errorAggregates、levelCounts、tagCounts）默认全量——它们本来就是压缩后的。
 - 明细类数据（entries、timeline）默认截断：entries 默认最多 50 条、timeline 默认最多 100 条，均带 `total` 计数与"还有多少未返回"提示，需要更多时用 `query_logs` 分页拉取。
 
-### 4.6 骨架
+### 4.4 骨架
 
 ```rust
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let server = LingjianServer::new()?;   // 解析数据目录、打开只读连接
-    let service = rmcp::serve_server(server, rmcp::transport::io::stdio()).await?;
-    service.waiting().await?;
-    Ok(())
+// mod.rs：装配与启停（伪码）
+pub fn start(app: AppHandle, port: u16) {
+    tauri::async_runtime::spawn(async move {
+        let cache = /* 从状态取出 Arc<Cache> */;
+        let service = StreamableHttpService::new(
+            move || Ok(LingjianServer { cache: cache.clone() }),
+            session_manager, StreamableHttpServerConfig::default(),
+        );
+        let app_router = axum::Router::new().route("/mcp", service);
+        axum::serve(TcpListener::bind(("127.0.0.1", port)).await?, app_router).await
+    });
 }
 
+// handler.rs：工具定义
 #[tool_router]
 impl LingjianServer {
     #[tool(name = "list_issues",
@@ -160,7 +164,7 @@ impl ServerHandler for LingjianServer {}
 |----------|----------------------------------------------------------------------|
 | 入参     | `limit?: number`（默认 20，上限 100）、`issueNumber?: number`（按 Issue 过滤） |
 | 返回     | `issues: IssueBrief[]`                                               |
-| 映射     | `core::cache::Cache::list_recent_reports` + `get_report`             |
+| 映射     | `services::cache::Cache::list_recent_reports` + `get_report`          |
 
 `IssueBrief`：`reportId`、`issueNumber`、`issueTitle`、`appName`、`appVersion`、`platform`、`realm`、`playTime`、`userDescription`、`logCount`、`reportTime`、`downloadedAt`。`userDescription` 是用户原始反馈，全量返回不截断（用户话通常很短且信息密度最高）。
 
@@ -170,7 +174,7 @@ impl ServerHandler for LingjianServer {}
 |------|--------------------------------------------|
 | 入参 | `reportId: string`                         |
 | 返回 | `IssueBrief`（单个，字段同上）             |
-| 映射 | `core::cache::Cache::get_report`           |
+| 映射 | `services::cache::Cache::get_report`       |
 
 ### 5.3 analyze_report
 
@@ -178,7 +182,7 @@ impl ServerHandler for LingjianServer {}
 |----------|--------------------------------------------------------------------------|
 | 入参     | `reportId: string`、`filter?: { levels?: string[]; tags?: string[]; keyword?: string }`（透传 `LogFilter` 语义）、`entryLimit?: number`（默认 50，0 表示不要明细）、`timelineLimit?: number`（默认 100） |
 | 返回     | `AnalysisResultDto`                                                      |
-| 映射     | `core::cache::get_entries` → `core::analyzer::analyze`                   |
+| 映射     | `cache::get_entries` → `analyzer::analyze`                               |
 
 `AnalysisResultDto`：`total`、`levelCounts`、`tagCounts`、`errorAggregates`（全量）、`timeline`（截断后 + `timelineTotal`）、`entries`（截断后 + `entryTotal`）。结构与灵鉴分析页同源同值。
 
@@ -188,7 +192,7 @@ impl ServerHandler for LingjianServer {}
 |----------|------------------------------------------------------------------|
 | 入参     | `reportId: string`、`filter?`（同上）、`offset?: number`（默认 0）、`limit?: number`（默认 50，上限 200） |
 | 返回     | `entries: LogEntryDto[]`、`matchedTotal`、`offset`、`limit`      |
-| 映射     | `core::cache::get_entries` + 内存过滤（复用 `LogFilter::matches`） |
+| 映射     | `cache::get_entries` + 内存过滤（复用 `LogFilter::matches`）     |
 
 `LogEntryDto`：`timestamp`、`level`、`tag`、`message`、`data`。
 
@@ -196,48 +200,49 @@ impl ServerHandler for LingjianServer {}
 
 | 工具           | 能力                     | 依赖与风险                                       |
 |----------------|--------------------------|--------------------------------------------------|
-| sync_latest    | 从 SCF 拉最新上报并落库  | SCF 契约（Scf 仓库 `API契约.md`）、写入需 WAL    |
-| add_comment    | 回写 Issue 评论           | GitHub token（现 keyring/settings 链路需去 Tauri 化） |
+| sync_latest    | 从 SCF 拉最新上报并落库  | SCF 契约（Scf 仓库 `API契约.md`）                 |
+| add_comment    | 回写 Issue 评论           | GitHub token（进程内 keyring 直接可用——托管形态红利） |
 | update_labels  | 更新 Issue 标签           | 同上                                             |
 | close_issue    | 关闭 Issue                | 同上                                             |
 
-写操作涉及凭证管理与外部副作用，契约单独评审；届时一并处理 github.rs 的 core 化与 WAL 迁移。
+托管形态下凭证与写库都在灵鉴进程内（keyring、`Arc<Cache>`），写操作的工具实现与服务层平级，无跨进程/凭证迁移问题；主要评审点是外部副作用的确认机制（写操作前是否需用户在桌面端确认）与 token 鉴权。
 
 ## 7. ZCode 侧接入
 
-`~/.zcode/cli/config.json` 的 `mcp.servers` 增加：
+设置页提供一键复制的配置片段（写入 `~/.zcode/cli/config.json` 的 `mcp.servers`）：
 
 ```json
 "lingjian": {
-  "type": "stdio",
-  "command": "D:\\100work\\103Tools\\LingJian\\src-tauri\\target\\release\\lingjian-mcp.exe"
+  "type": "http",
+  "url": "http://127.0.0.1:3920/mcp"
 }
 ```
 
-验证：ZCode 会话内 `/mcp` 应显示 lingjian 已连接并列出 4 个工具。日常用法示例（ZCode 会话自然语言即可）："用 list_issues 看最新上报，分析五维属性显示不全那个 Issue，然后在本项目里定位修复"。
+验证：灵鉴运行且 MCP 开关打开时，ZCode 会话内 `/mcp` 应显示 lingjian 已连接并列出 4 个工具。日常用法示例（ZCode 会话自然语言即可）："用 list_issues 看最新上报，分析五维属性显示不全那个 Issue，然后在本项目里定位修复"。
 
-可选配套：在目标修复项目（游戏源码）根 `AGENTS.md` 增加一节"灵鉴数据接入"，写明可用的 MCP 工具与工作流约定。发布层面（安装包携带 mcp exe、路径自动化）随二期处理。
+可选配套：在目标修复项目（游戏源码）根 `AGENTS.md` 增加一节"灵鉴数据接入"，写明可用的 MCP 工具与工作流约定。
 
 ## 8. 测试与验收标准
 
 | 类别     | 内容                                                                                     |
 |----------|------------------------------------------------------------------------------------------|
-| 单元测试 | core 迁移后 `cargo test --lib` 全绿；DTO 转换与截断逻辑（entries/timeline limit）有测试 |
-| 协议测试 | 用脚本向 `lingjian-mcp.exe` stdin 发 initialize / tools/list / tools/call JSON-RPC，断言响应 |
+| 单元测试 | DTO 转换与截断逻辑（entries/timeline limit）有测试；settings 读写与 listener 重启逻辑有测试 |
+| 协议测试 | 灵鉴运行 + 开关打开后，用 curl 或脚本向 `http://127.0.0.1:3920/mcp` 发 initialize / tools/list / tools/call，断言响应 |
+| 设置页   | 开关切换、端口修改即时生效（`mcp_status` 状态正确）；端口被占时给出可读错误               |
 | 端到端   | ZCode 会话调用 `list_issues` → `analyze_report`（Issue #15），结果与灵鉴分析页一致：ERROR 2 条（"宗门商店刷新失败：未找到当前宗门ID"）、INFO 145、WARN 53 |
-| 并发     | 灵鉴桌面端下载新上报的同时，MCP 工具调用不报 database locked（busy_timeout 生效）        |
-| 回归     | `npm run tauri dev` / `npm run tauri build` 在 workspace 布局下正常；前端 vitest 全绿    |
+| 并发     | 灵鉴下载新上报的同时，MCP 工具调用正常排队返回（Mutex 互斥，无死锁）                      |
+| 回归     | `npm run tauri dev` / `npm run tauri build` 正常；前端 vitest 全绿；MCP 关闭时无端口监听、无行为差异 |
 
 ## 9. 风险与待决事项
 
-- **rmcp/schemars 版本匹配**：两者迭代都快，实现时锁定并记录在 core/mcp 的 Cargo.toml 注释中。
-- **Tauri workspace 兼容**：root package + members 布局为官方支持姿势，但需按第 8 节回归 dev/build 双命令，防构建配置边缘问题。
-- **stdio 中文编码**：Windows 下 JSON-RPC 走 UTF-8，rmcp 自行处理；验收时确认无 GBK 乱码即可。
+- **rmcp 与 ZCode 的 Streamable HTTP 兼容性**：两端均实现现行 MCP 规范，但 streamable http 细节（session header、SSE 回退）存在实现差异风险；验收时若不通，降级路径为 rmcp 的 SSE transport 或短轮询排查（ZCode 有 diagnosing-mcp 诊断技能可用）。
+- **rmcp/schemars 版本匹配**：两者迭代快，实现时锁定并记录在 Cargo.toml 注释中。
+- **端口冲突**：默认 3920 若被占，启动失败需在设置页报错并允许改端口；不提供自动换端口（避免与配置片段不一致）。
 - **待决：修复目标项目**。游戏源码目录尚未确认，不影响本方案实施，只影响第 7 节 AGENTS.md 落点与联调环境。
 
 ## 10. 实施步骤（提交粒度）
 
-1. `refactor: 抽取 lingjian-core crate——models/analyzer/cache/paths 迁入 workspace 子 crate，桌面端改 path 依赖，测试随迁全绿`
-2. `feat(mcp): lingjian-mcp 骨架与 list_issues——rmcp stdio server，只读连接与数据目录寻址复用 core`
-3. `feat(mcp): 补齐 get_report/analyze_report/query_logs——明细默认截断，契约对齐设计方案`
-4. `docs: ZCode 侧接入配置与验收记录——config.json 片段、端到端验证结果回填本文档`
+1. `feat(mcp): 进程内 MCP server 骨架与 list_issues——rmcp streamable-http + axum，settings 增 mcpEnabled/mcpPort，随应用启停`
+2. `feat(mcp): 补齐 get_report/analyze_report/query_logs——明细默认截断，契约对齐设计方案`
+3. `feat(ui): 设置页 MCP 配置分区——开关/端口/运行状态，连接 URL 与 ZCode 配置片段一键复制`
+4. `docs: ZCode 侧接入配置与验收记录——端到端验证结果回填本文档`
