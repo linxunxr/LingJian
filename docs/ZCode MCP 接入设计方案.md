@@ -6,9 +6,26 @@
 
 | 日期       | 变更内容                                                                             |
 |------------|--------------------------------------------------------------------------------------|
+| 2026-08-30 | 回填实施记录：一期四工具已在 feat/mcp-server 分支落地并全量验证通过，附与方案的差异说明 |
 | 2026-08-29 | v2：形态改为桌面端托管——删独立进程与 core 抽取方案，新增设置页配置界面与 HTTP transport 设计 |
 | 2026-08-29 | 补"MCP server 生命周期"小节（stdio 形态，已被 v2 取代）                               |
 | 2026-08-29 | 初版：三方案对比、core 抽取、四只读工具契约、验收标准                                  |
+
+## 实施记录（2026-08-30，feat/mcp-server 分支）
+
+一期四个只读工具全部落地并验证通过：
+
+- 协议链路（curl 直连 `http://127.0.0.1:3920/mcp`）：initialize（SSE + Mcp-Session-Id）→ tools/list → tools/call 全通，错误分支返回 JSON-RPC -32602 中文消息；
+- 端到端：`analyze_report`（Issue #15）与灵鉴分析页基准一致——total 200、error 2 / info 145 / warn 53、宗门商店错误聚合 2 条；截断逻辑（timeline 55→3、entries 200→2）与总数字段正确；
+- 回归：`cargo test --lib` 48 例、前端 vitest 51 例全绿；MCP 关闭时应用无行为差异；
+- serverInfo 定制为 `lingjian`（宏默认 from_build_env 会显示 rmcp 自身标识）。
+
+与方案的差异（实现时的实际情况）：
+
+- rmcp 实际使用 **3.1.4**，其 API 与旧文档差异较大：`Parameters` 在 `handler::server::wrapper` 下、错误类型为 `ErrorData`（`internal_error`/`invalid_params` 构造）、session 管理器为 `session::local::LocalSessionManager`（非 InMemorySessionManager）、`ServerInfo` 为 non-exhaustive 需经 `#[tool_handler]` 宏属性定制名称与引导语；
+- tokio 也成为显式依赖（`features = ["net"]`，TcpListener 绑定需要），方案第 3 节原表述"不新增 tokio"不成立，已直接依赖；
+- 工具参数统一 camelCase（含 list_issues/get_report 的入参），与方案 5 节契约一致；
+- ZCode 客户端实连验证待用户在 ZCode 配置加入 lingjian 后执行 `/mcp` 确认（协议层已由 curl 全量验证）。
 
 ## 1. 背景与方向选择
 

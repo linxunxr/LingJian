@@ -1,4 +1,5 @@
 mod commands;
+mod mcp;
 mod models;
 mod services;
 
@@ -88,6 +89,10 @@ pub fn run() {
             match init_state(app) {
                 Ok(state) => {
                     app.manage(state);
+                    // MCP server 启动失败不阻断应用，仅记录（设置页可查看状态重试）
+                    if let Err(e) = mcp::apply_config(app.handle()) {
+                        log::warn!("[mcp] 启动失败: {e}");
+                    }
                 }
                 Err(msg) => fatal(app.handle(), msg),
             }
@@ -109,6 +114,8 @@ pub fn run() {
             secret::get_secret,
             secret::delete_secret,
             settings::test_scf_endpoint,
+            commands::mcp::mcp_set_config,
+            commands::mcp::mcp_status,
             storage::get_storage_info,
             storage::change_data_dir,
             storage::get_cache_size,

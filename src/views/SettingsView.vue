@@ -5,6 +5,7 @@ import { getVersion } from '@tauri-apps/api/app'
 import { useSettings, saveSettings } from '@/composables/useSettings'
 import UpdateCard from '@/components/UpdateCard.vue'
 import DataCard from '@/components/DataCard.vue'
+import McpCard from '@/components/McpCard.vue'
 
 const { settings, loadSettings } = useSettings()
 
@@ -93,6 +94,8 @@ onMounted(async () => {
       <span v-if="saved" class="saved-tip">✓ 已保存</span>
       <span v-else-if="error" class="error-tip">{{ error }}</span>
     </div>
+
+    <McpCard />
 
     <div class="card-row">
       <section class="card about">
