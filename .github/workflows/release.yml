@@ -63,6 +63,11 @@ jobs:
           releaseBody: '请查看 Assets 下载对应平台的安装包。'
           releaseDraft: false
           prerelease: false
+          # asset 命名模板：productName 是中文"灵鉴"，tauri-action 默认命名
+          # 会经 ghAssetName 的 ASCII 清洗把它吞掉，得到残缺名（_0.2.2_x64-setup.exe）。
+          # 显式模板绕过清洗；LingJian 为字面量前缀，[version]/[arch]/[ext] 取自构建信息，
+          # [setup] 仅 NSIS 产物为 "-setup" 其他为空串，对齐 Tauri CLI 本地命名习惯。
+          releaseAssetNamePattern: 'LingJian_[version]_[arch][setup][ext]'
           args: ${{ matrix.args }}
 
   # 构建完成后，同步所有产物到腾讯云 COS（国内加速）
