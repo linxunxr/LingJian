@@ -87,13 +87,58 @@ pub struct LogFilterDto {
     pub keyword: String,
 }
 
+/// filter 字段反序列化：兼容对象与 JSON 字符串两种形式。
+/// 部分客户端（如 ZCode）会把嵌套 object 参数整体序列化为字符串传入，
+/// 严格 struct 反序列化会直接拒绝；字符串在这里多 parse 一次，
+/// null 与空白串视为缺省，字符串内容非法 JSON 时仍报错。
+mod filter_de {
+    use std::fmt;
+
+    use serde::de::{self, MapAccess, Visitor};
+    use serde::{Deserialize, Deserializer};
+
+    use super::LogFilterDto;
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<LogFilterDto, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct FilterVisitor;
+
+        impl<'de> Visitor<'de> for FilterVisitor {
+            type Value = LogFilterDto;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("过滤条件对象或其 JSON 字符串形式")
+            }
+
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<LogFilterDto, E> {
+                if v.trim().is_empty() {
+                    return Ok(LogFilterDto::default());
+                }
+                serde_json::from_str(v).map_err(de::Error::custom)
+            }
+
+            fn visit_unit<E: de::Error>(self) -> Result<LogFilterDto, E> {
+                Ok(LogFilterDto::default())
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<LogFilterDto, A::Error> {
+                LogFilterDto::deserialize(de::value::MapAccessDeserializer::new(map))
+            }
+        }
+
+        deserializer.deserialize_any(FilterVisitor)
+    }
+}
+
 /// analyze_report 入参
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AnalyzeReportParams {
     pub report_id: String,
-    /// 过滤条件，默认无过滤
-    #[serde(default)]
+    /// 过滤条件，默认无过滤；兼容对象或 JSON 字符串传参
+    #[serde(default, deserialize_with = "filter_de::deserialize")]
     pub filter: LogFilterDto,
     /// 明细条目上限，默认 50；0 表示不返回明细（只要统计与聚合）
     #[serde(default)]
@@ -184,7 +229,7 @@ pub struct TagCountDto {
 #[serde(rename_all = "camelCase")]
 pub struct QueryLogsParams {
     pub report_id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "filter_de::deserialize")]
     pub filter: LogFilterDto,
     /// 分页偏移，默认 0
     #[serde(default)]
@@ -203,4 +248,150 @@ pub struct QueryLogsResult {
     pub matched_total: usize,
     pub offset: usize,
     pub limit: usize,
+}
+
+// ===== 二期：同步与写操作（需设置页开启"允许写操作"，sync_latest 除外） =====
+
+/// sync_latest 入参
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncLatestParams {
+    /// Issue 状态筛选：open / closed / all，默认 open
+    #[serde(default)]
+    pub state: Option<String>,
+    /// 页码，默认 1
+    #[serde(default)]
+    pub page: Option<u32>,
+    /// 是否下载缺失的日志到本地（默认 true；false 时仅返回远端列表）
+    #[serde(default)]
+    pub download: Option<bool>,
+}
+
+/// SCF 侧 Issue 列表条目
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteIssueDto {
+    pub number: u32,
+    pub report_id: String,
+    pub title: String,
+    pub state: String,
+    pub issue_url: String,
+    pub created_at: String,
+}
+
+/// sync_latest 返回
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncResultDto {
+    /// 远端 Issue 列表
+    pub issues: Vec<RemoteIssueDto>,
+    pub has_more: bool,
+    /// 本次新下载落库的条数
+    pub downloaded: usize,
+    /// 本地已有跳过的条数
+    pub skipped: usize,
+    /// 下载失败的 issue 编号与原因
+    pub failed: Vec<String>,
+}
+
+/// add_comment 入参
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AddCommentParams {
+    pub issue_number: u32,
+    /// 评论内容（Markdown）
+    pub body: String,
+}
+
+/// update_labels 入参
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateLabelsParams {
+    pub issue_number: u32,
+    /// 目标标签集合（整体替换，不是追加）
+    pub labels: Vec<String>,
+}
+
+/// close_issue 入参
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CloseIssueParams {
+    pub issue_number: u32,
+}
+
+/// Issue 操作（评论/标签/关闭）的返回
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueActionResultDto {
+    pub ok: bool,
+    /// 操作后的 Issue 状态（close 后为 "closed"）
+    pub state: Option<String>,
+    /// 操作后的标签集合（setLabels/close 后返回）
+    pub labels: Option<Vec<String>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 模拟 rmcp Parameters 的反序列化路径：arguments JSON 值 → params 结构体
+    #[test]
+    fn filter_accepts_object_form() {
+        let p: QueryLogsParams = serde_json::from_value(serde_json::json!({
+            "reportId": "r1",
+            "filter": {"levels": ["WARN"], "keyword": "abc"}
+        }))
+        .unwrap();
+        assert_eq!(p.filter.levels, vec!["WARN".to_string()]);
+        assert_eq!(p.filter.keyword, "abc");
+    }
+
+    #[test]
+    fn filter_accepts_json_string_form() {
+        let p: QueryLogsParams = serde_json::from_value(serde_json::json!({
+            "reportId": "r1",
+            "filter": "{\"levels\":[\"WARN\"],\"tags\":[\"ShopLoader\"]}"
+        }))
+        .unwrap();
+        assert_eq!(p.filter.levels, vec!["WARN".to_string()]);
+        assert_eq!(p.filter.tags, vec!["ShopLoader".to_string()]);
+    }
+
+    #[test]
+    fn filter_missing_blank_and_null_fall_back_to_default() {
+        let p: QueryLogsParams =
+            serde_json::from_value(serde_json::json!({"reportId": "r1"})).unwrap();
+        assert!(p.filter.levels.is_empty());
+
+        let p: QueryLogsParams = serde_json::from_value(serde_json::json!({
+            "reportId": "r1", "filter": ""
+        }))
+        .unwrap();
+        assert!(p.filter.tags.is_empty());
+
+        let p: QueryLogsParams = serde_json::from_value(serde_json::json!({
+            "reportId": "r1", "filter": null
+        }))
+        .unwrap();
+        assert!(p.filter.keyword.is_empty());
+    }
+
+    #[test]
+    fn filter_invalid_json_string_still_errors() {
+        let r = serde_json::from_value::<QueryLogsParams>(serde_json::json!({
+            "reportId": "r1",
+            "filter": "{not json"
+        }));
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn analyze_params_accepts_string_filter_too() {
+        let p: AnalyzeReportParams = serde_json::from_value(serde_json::json!({
+            "reportId": "r1",
+            "filter": "{\"levels\":[\"ERROR\"]}"
+        }))
+        .unwrap();
+        assert_eq!(p.filter.levels, vec!["ERROR".to_string()]);
+    }
 }

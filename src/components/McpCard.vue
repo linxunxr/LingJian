@@ -7,11 +7,13 @@ interface McpStatus {
   running: boolean
   port: number
   listeningUrl: string | null
+  allowWrite: boolean
 }
 
 const status = ref<McpStatus | null>(null)
 const enabled = ref(false)
 const port = ref(3920)
+const allowWrite = ref(false)
 const applying = ref(false)
 const message = ref<string | null>(null)
 const messageType = ref<'success' | 'error'>('success')
@@ -26,6 +28,7 @@ async function refresh() {
     status.value = await invoke<McpStatus>('mcp_status')
     enabled.value = status.value.enabled
     port.value = status.value.port
+    allowWrite.value = status.value.allowWrite
   } catch (e) {
     showMessage(`状态查询失败: ${e}`, 'error')
   }
@@ -38,6 +41,7 @@ async function onApply() {
     status.value = await invoke<McpStatus>('mcp_set_config', {
       enabled: enabled.value,
       port: port.value,
+      allowWrite: allowWrite.value,
     })
     showMessage(
       status.value.running ? `已启动，监听 ${status.value.listeningUrl}` : 'MCP 已关闭',
@@ -91,6 +95,14 @@ onMounted(refresh)
     </div>
 
     <div class="field">
+      <label class="switch-row">
+        <input v-model="allowWrite" type="checkbox" class="switch-input" />
+        <span class="switch-label">允许写操作（AI 可评论 / 改标签 / 关闭 GitHub Issue）</span>
+      </label>
+      <p class="field-hint">默认关闭；开启后 AI 代理才能执行回写类操作，请确认信任调用方</p>
+    </div>
+
+    <div class="field">
       <label class="field-label">端口</label>
       <input
         v-model.number="port"
@@ -116,7 +128,8 @@ onMounted(refresh)
     <p class="hint">
       将配置片段加入 ZCode 用户配置（~/.zcode/cli/config.json 的 mcp.servers）后，即可在任意
       ZCode 会话中查询灵鉴的分析结果。可用工具：list_issues / get_report / analyze_report /
-      query_logs。
+      query_logs / sync_latest（同步远端上报），开启写操作后另有 add_comment / update_labels /
+      close_issue。
     </p>
   </section>
 </template>

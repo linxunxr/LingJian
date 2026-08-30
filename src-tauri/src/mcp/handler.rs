@@ -1,34 +1,65 @@
 //! MCP server 的工具集实现：薄封装 services 层，面向 LLM 控制响应体量。
+//!
+//! 只读工具（list_issues 等）始终可用；sync_latest 仅写本地库；
+//! 评论/标签/关闭属外部写操作，需设置页开启「允许写操作」后方可调用。
 
 use std::sync::Arc;
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_handler, tool_router, ErrorData, Json, ServerHandler};
+use tauri::Manager;
 
 use crate::models::analyze::{AnalysisResult, LogFilter};
 use crate::models::log_entry::{LogEntry, LogLevel};
 use crate::models::report::Report;
 use crate::services::cache::Cache;
+use crate::services::downloader;
 
 use super::dto::{
-    AnalysisResultDto, AnalyzeReportParams, ErrorAggregateDto, GetReportParams, IssueBriefDto,
-    IssueListResult, LevelCountsDto, ListIssuesParams, LogEntryDto, LogFilterDto, QueryLogsParams,
-    QueryLogsResult, TagCountDto, TimelinePointDto,
+    AddCommentParams, AnalysisResultDto, AnalyzeReportParams, CloseIssueParams, ErrorAggregateDto,
+    GetReportParams, IssueActionResultDto, IssueBriefDto, IssueListResult, LevelCountsDto,
+    ListIssuesParams, LogEntryDto, LogFilterDto, QueryLogsParams, QueryLogsResult, RemoteIssueDto,
+    SyncLatestParams, SyncResultDto, TagCountDto, TimelinePointDto, UpdateLabelsParams,
 };
 
-/// 灵鉴 MCP server。每个 HTTP 会话一个实例，共享应用级 SQLite 缓存。
+/// 灵鉴 MCP server。每个 HTTP 会话一个实例，经 AppHandle 共享应用状态。
 pub struct LingjianServer {
-    cache: Arc<Cache>,
+    app: tauri::AppHandle,
 }
 
 impl LingjianServer {
-    pub fn new(cache: Arc<Cache>) -> Self {
-        Self { cache }
+    pub fn new(app: tauri::AppHandle) -> Self {
+        Self { app }
+    }
+
+    fn cache(&self) -> Arc<Cache> {
+        self.app.state::<crate::AppState>().cache.clone()
+    }
+
+    fn scf_config(&self) -> Result<(String, String), ErrorData> {
+        let (url, key) = super::read_scf_settings(&self.app);
+        if url.trim().is_empty() || key.trim().is_empty() {
+            return Err(ErrorData::internal_error(
+                "未配置 SCF 端点，请先在灵鉴设置页填写 URL 与 API Key".to_string(),
+                None,
+            ));
+        }
+        Ok((url, key))
+    }
+
+    fn write_allowed(&self) -> Result<(), ErrorData> {
+        if !super::read_allow_write(&self.app) {
+            return Err(ErrorData::internal_error(
+                "写操作未开放：请到灵鉴设置页开启「允许写操作」后重试".to_string(),
+                None,
+            ));
+        }
+        Ok(())
     }
 
     /// 在异步上下文里执行同步 SQLite 查询
     async fn query_reports(&self, limit: usize) -> Result<Vec<Report>, ErrorData> {
-        let cache = self.cache.clone();
+        let cache = self.cache();
         tauri::async_runtime::spawn_blocking(move || cache.list_recent_reports(limit))
             .await
             .map_err(|e| ErrorData::internal_error(format!("查询任务失败: {e}"), None))?
@@ -36,7 +67,7 @@ impl LingjianServer {
     }
 
     async fn query_report(&self, report_id: String) -> Result<Option<Report>, ErrorData> {
-        let cache = self.cache.clone();
+        let cache = self.cache();
         tauri::async_runtime::spawn_blocking(move || cache.get_report(&report_id))
             .await
             .map_err(|e| ErrorData::internal_error(format!("查询任务失败: {e}"), None))?
@@ -44,11 +75,32 @@ impl LingjianServer {
     }
 
     async fn query_entries(&self, report_id: String) -> Result<Vec<LogEntry>, ErrorData> {
-        let cache = self.cache.clone();
+        let cache = self.cache();
         tauri::async_runtime::spawn_blocking(move || cache.get_entries(&report_id))
             .await
             .map_err(|e| ErrorData::internal_error(format!("查询任务失败: {e}"), None))?
             .map_err(|e| ErrorData::internal_error(format!("查询日志失败: {e}"), None))
+    }
+
+    /// 统一的 Issue 操作入口（评论/标签/关闭），SCF 代理转发 GitHub
+    async fn act_on_issue(
+        &self,
+        number: u32,
+        action: &str,
+        body: Option<&str>,
+        labels: Option<&[String]>,
+    ) -> Result<IssueActionResultDto, ErrorData> {
+        self.write_allowed()?;
+        let (scf_url, api_key) = self.scf_config()?;
+        let client = self.app.state::<crate::AppState>().client.clone();
+        let r = downloader::act_on_issue(&scf_url, number, action, body, labels, &api_key, &client)
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("操作 Issue #{number} 失败: {e}"), None))?;
+        Ok(IssueActionResultDto {
+            ok: r.ok,
+            state: r.state,
+            labels: r.labels,
+        })
     }
 }
 
@@ -218,11 +270,179 @@ impl LingjianServer {
             limit,
         }))
     }
+
+    #[tool(
+        name = "sync_latest",
+        description = "从 SCF 拉取远端 Issue 上报列表，并把本地缺失的日志下载落库（已有自动跳过）。仅写本地数据库，不改动 GitHub Issue",
+        annotations(read_only_hint = true)
+    )]
+    async fn sync_latest(
+        &self,
+        Parameters(SyncLatestParams {
+            state,
+            page,
+            download,
+        }): Parameters<SyncLatestParams>,
+    ) -> Result<Json<SyncResultDto>, ErrorData> {
+        let (scf_url, api_key) = self.scf_config()?;
+        let st = match state.as_deref().unwrap_or("open") {
+            "all" => "all",
+            "closed" => "closed",
+            _ => "open",
+        };
+        let pg = page.unwrap_or(1).max(1);
+        let do_download = download.unwrap_or(true);
+
+        let app_state = self.app.state::<crate::AppState>();
+        let client = app_state.client.clone();
+        let cache = app_state.cache.clone();
+        let cache_dir = app_state.cache_dir.clone();
+
+        let list = downloader::list_issues(&scf_url, st, pg, &api_key, &client)
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("拉取远端列表失败: {e}"), None))?;
+
+        let mut downloaded = 0usize;
+        let mut skipped = 0usize;
+        let mut failed: Vec<String> = Vec::new();
+
+        for item in &list.issues {
+            // 本地已有则跳过
+            let rid = item.report_id.clone();
+            let exists = {
+                let cache = cache.clone();
+                tauri::async_runtime::spawn_blocking(move || cache.get_report(&rid))
+                    .await
+                    .map_err(|e| ErrorData::internal_error(format!("查询任务失败: {e}"), None))?
+                    .map_err(|e| ErrorData::internal_error(format!("查询上报失败: {e}"), None))?
+                    .is_some()
+            };
+            if exists {
+                skipped += 1;
+                continue;
+            }
+            if !do_download {
+                continue;
+            }
+
+            // 先解析完整元信息（用户反馈/游玩时长仅 /issue/:number 端点返回），
+            // 失败则降级用列表信息落库
+            let info = downloader::resolve_issue(&scf_url, item.number, &api_key, &client).await.ok();
+
+            let report_id = info
+                .as_ref()
+                .map(|i| i.report_id.clone())
+                .unwrap_or_else(|| item.report_id.clone());
+
+            match downloader::download(&scf_url, &report_id, &api_key, &client, &cache_dir).await {
+                Ok((entries, _size)) => {
+                    let now = chrono::Utc::now().to_rfc3339();
+                    let report = Report {
+                        report_id: report_id.clone(),
+                        issue_number: Some(item.number as i32),
+                        issue_title: Some(item.title.clone()),
+                        app_name: None,
+                        app_version: info
+                            .as_ref()
+                            .and_then(|i| i.app_version.clone())
+                            .or_else(|| item.app_version.clone()),
+                        platform: info
+                            .as_ref()
+                            .and_then(|i| i.platform.clone())
+                            .or_else(|| item.platform.clone()),
+                        realm: info
+                            .as_ref()
+                            .and_then(|i| i.realm.clone())
+                            .or_else(|| item.realm.clone()),
+                        // SCF 的 playTime 为字符串（如 "1234"），落库解析为秒数
+                        play_time: info
+                            .as_ref()
+                            .and_then(|i| i.play_time.as_deref())
+                            .and_then(|s| s.parse::<u64>().ok()),
+                        user_description: info.as_ref().and_then(|i| i.user_description.clone()),
+                        report_time: now.clone(),
+                        log_count: entries.len(),
+                        downloaded_at: now,
+                    };
+                    let cache = cache.clone();
+                    let saved = tauri::async_runtime::spawn_blocking(move || {
+                        cache.save_report(&report, &entries)
+                    })
+                    .await
+                    .map_err(|e| ErrorData::internal_error(format!("落库任务失败: {e}"), None))?;
+                    if let Err(e) = saved {
+                        failed.push(format!("#{}: 落库失败 {e}", item.number));
+                    } else {
+                        downloaded += 1;
+                    }
+                }
+                Err(e) => failed.push(format!("#{}: 下载失败 {e}", item.number)),
+            }
+        }
+
+        Ok(Json(SyncResultDto {
+            issues: list
+                .issues
+                .iter()
+                .map(|i| RemoteIssueDto {
+                    number: i.number,
+                    report_id: i.report_id.clone(),
+                    title: i.title.clone(),
+                    state: i.state.clone(),
+                    issue_url: i.issue_url.clone(),
+                    created_at: i.created_at.clone(),
+                })
+                .collect(),
+            has_more: list.has_more,
+            downloaded,
+            skipped,
+            failed,
+        }))
+    }
+
+    #[tool(
+        name = "add_comment",
+        description = "在 GitHub Issue 上发表评论（需灵鉴设置页开启「允许写操作」）"
+    )]
+    async fn add_comment(
+        &self,
+        Parameters(AddCommentParams { issue_number, body }): Parameters<AddCommentParams>,
+    ) -> Result<Json<IssueActionResultDto>, ErrorData> {
+        self.act_on_issue(issue_number, "comment", Some(&body), None)
+            .await
+            .map(Json)
+    }
+
+    #[tool(
+        name = "update_labels",
+        description = "整体替换 GitHub Issue 的标签集合（需灵鉴设置页开启「允许写操作」）。注意是替换而非追加，调用前先用 list_issues 确认现有标签"
+    )]
+    async fn update_labels(
+        &self,
+        Parameters(UpdateLabelsParams { issue_number, labels }): Parameters<UpdateLabelsParams>,
+    ) -> Result<Json<IssueActionResultDto>, ErrorData> {
+        self.act_on_issue(issue_number, "setLabels", None, Some(&labels))
+            .await
+            .map(Json)
+    }
+
+    #[tool(
+        name = "close_issue",
+        description = "关闭 GitHub Issue（需灵鉴设置页开启「允许写操作」）。如需附说明，先调用 add_comment"
+    )]
+    async fn close_issue(
+        &self,
+        Parameters(CloseIssueParams { issue_number }): Parameters<CloseIssueParams>,
+    ) -> Result<Json<IssueActionResultDto>, ErrorData> {
+        self.act_on_issue(issue_number, "close", None, None)
+            .await
+            .map(Json)
+    }
 }
 
 // get_info 由 #[tool_handler] 生成，名称/引导语在此定制（version 宏属性不支持表达式，用默认值）
 #[tool_handler(
     name = "lingjian",
-    instructions = "灵鉴（LingJian）日志分析工具。先用 list_issues 找到目标上报，再用 analyze_report 获取错误聚合与统计，query_logs 分页查看原始日志。"
+    instructions = "灵鉴（LingJian）日志分析工具。先用 list_issues 看已下载的上报（sync_latest 可从 SCF 同步新上报），analyze_report 获取错误聚合与统计，query_logs 分页查看原始日志；分析定位后可用 add_comment / update_labels / close_issue 回写处理结果（写操作需灵鉴设置页开启「允许写操作」）。"
 )]
 impl ServerHandler for LingjianServer {}
