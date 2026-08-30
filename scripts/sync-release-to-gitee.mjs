@@ -56,10 +56,16 @@ if (!token) {
 
 const headers = { authorization: `token ${token}` }
 
+// Gitee API 超时：v0.4.2 发布实测 CI runner → Gitee 链路异常时 fetch 无超时会
+// 无限挂起（卡 40+ 分钟直到手动取消，job 级 6 小时超时才兜底）。所有 API 调用
+// 统一走本封装，超时即抛错交给上层重试/跳过，不再依赖 job 超时。
+const API_TIMEOUT_MS = 30_000
+
 async function gitee(path, init = {}) {
   const resp = await fetch(`${GITEE_API}${path}`, {
     ...init,
     headers: { ...headers, ...(init.headers || {}) },
+    signal: AbortSignal.timeout(API_TIMEOUT_MS),
   })
   const text = await resp.text()
   let body
