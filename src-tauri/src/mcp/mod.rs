@@ -27,11 +27,14 @@ pub struct McpStatus {
     pub listening_url: Option<String>,
     /// 是否开放写操作（settings.json 的 mcpAllowWrite）
     pub allow_write: bool,
+    /// 最近一次启动失败原因（enabled 但未 running 时供设置页展示，成功启动后清除）
+    pub last_error: Option<String>,
 }
 
 struct Runtime {
     task: Option<tauri::async_runtime::JoinHandle<()>>,
     port: Option<u16>,
+    last_error: Option<String>,
 }
 
 static RUNTIME: OnceLock<Mutex<Runtime>> = OnceLock::new();
@@ -41,6 +44,7 @@ fn runtime() -> &'static Mutex<Runtime> {
         Mutex::new(Runtime {
             task: None,
             port: None,
+            last_error: None,
         })
     })
 }
@@ -141,7 +145,16 @@ pub fn apply_config(app: &tauri::AppHandle) -> Result<McpStatus, String> {
     stop();
     let (enabled, port) = read_mcp_settings(app);
     if enabled {
-        start(app, port)?;
+        // 启动失败（端口被占等）记录原因，供设置页展示；否则用户只见「已停止」无从排查
+        if let Err(e) = start(app, port) {
+            if let Ok(mut r) = runtime().lock() {
+                r.last_error = Some(e.clone());
+            }
+            return Err(e);
+        }
+    }
+    if let Ok(mut r) = runtime().lock() {
+        r.last_error = None;
     }
     Ok(status(app))
 }
@@ -159,5 +172,9 @@ pub fn status(app: &tauri::AppHandle) -> McpStatus {
         port,
         listening_url: running_port.map(|p| format!("http://127.0.0.1:{p}/mcp")),
         allow_write: read_allow_write(app),
+        last_error: runtime()
+            .lock()
+            .ok()
+            .and_then(|r| r.last_error.clone()),
     }
 }
