@@ -317,17 +317,30 @@ pub struct UpdateLabelsParams {
 #[serde(rename_all = "camelCase")]
 pub struct CloseIssueParams {
     pub issue_number: u32,
+    /// 解决该问题的游戏版本号（如 "0.9.19"）。提供时执行与灵鉴界面「关闭 Issue」
+    /// 相同的完整流程：关闭 → 追加 v<版本号> 标签 → 发表解决评论；缺省则仅关闭
+    #[serde(default)]
+    pub fixed_in: Option<String>,
 }
 
-/// Issue 操作（评论/标签/关闭）的返回
+/// reopen_issue 入参
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ReopenIssueParams {
+    pub issue_number: u32,
+}
+
+/// Issue 操作（评论/标签/关闭/重开）的返回
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct IssueActionResultDto {
     pub ok: bool,
-    /// 操作后的 Issue 状态（close 后为 "closed"）
+    /// 操作后的 Issue 状态（close 后为 "closed"，reopen 后为 "open"）
     pub state: Option<String>,
     /// 操作后的标签集合（setLabels/close 后返回）
     pub labels: Option<Vec<String>>,
+    /// 附带步骤（版本标签 / 解决评论）的执行结果，全成功为空
+    pub followup_notes: Vec<String>,
 }
 
 #[cfg(test)]

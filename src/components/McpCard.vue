@@ -166,8 +166,9 @@ onMounted(refresh)
         <code>query_logs</code> <code>sync_latest</code>（同步远端上报）
       </p>
       <p>
-        回写类（需开启「允许写操作」）：<code>add_comment</code> <code>update_labels</code>
-        <code>close_issue</code>
+        回写类（需开启「允许写操作」）：<code>close_issue</code>（可传解决版本号，与界面
+        关单同流程）<code>reopen_issue</code> <code>add_comment</code>
+        <code>update_labels</code>
       </p>
     </div>
   </section>
