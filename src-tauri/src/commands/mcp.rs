@@ -8,6 +8,7 @@ pub async fn mcp_set_config(
     app: AppHandle,
     enabled: bool,
     port: u16,
+    allow_write: bool,
 ) -> Result<McpStatus, String> {
     // 参数校验放最前：合法端口范围之外直接拒绝，避免写出不可用配置
     if !(1..=65535).contains(&port) {
@@ -19,6 +20,7 @@ pub async fn mcp_set_config(
         let store = app.store("settings.json").map_err(|e| format!("打开设置失败: {e}"))?;
         store.set("mcpEnabled", serde_json::json!(enabled));
         store.set("mcpPort", serde_json::json!(port));
+        store.set("mcpAllowWrite", serde_json::json!(allow_write));
         store.save().map_err(|e| format!("保存设置失败: {e}"))?;
     }
 

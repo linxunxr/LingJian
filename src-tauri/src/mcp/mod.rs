@@ -8,8 +8,6 @@ pub mod handler;
 
 use std::sync::{Mutex, OnceLock};
 
-use tauri::Manager;
-
 use handler::LingjianServer;
 
 /// 默认监听端口
@@ -27,6 +25,8 @@ pub struct McpStatus {
     pub port: u16,
     /// 监听 URL（未运行时为 None）
     pub listening_url: Option<String>,
+    /// 是否开放写操作（settings.json 的 mcpAllowWrite）
+    pub allow_write: bool,
 }
 
 struct Runtime {
@@ -63,6 +63,32 @@ fn read_mcp_settings(app: &tauri::AppHandle) -> (bool, u16) {
     (enabled, port)
 }
 
+/// 写操作开关（默认关：写工具调用会被拒绝，需用户显式授权）
+pub fn read_allow_write(app: &tauri::AppHandle) -> bool {
+    use tauri_plugin_store::StoreExt;
+    app.store("settings.json")
+        .ok()
+        .and_then(|s| s.get("mcpAllowWrite").and_then(|v| v.as_bool()))
+        .unwrap_or(false)
+}
+
+/// SCF 端点配置（settings.json 的 scfUrl / apiKey）
+pub fn read_scf_settings(app: &tauri::AppHandle) -> (String, String) {
+    use tauri_plugin_store::StoreExt;
+    let Ok(store) = app.store("settings.json") else {
+        return (String::new(), String::new());
+    };
+    let url = store
+        .get("scfUrl")
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_default();
+    let key = store
+        .get("apiKey")
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_default();
+    (url, key)
+}
+
 /// 停止当前 server（若有）
 pub fn stop() {
     if let Some(task) = runtime().lock().ok().and_then(|mut r| r.task.take()) {
@@ -75,10 +101,8 @@ pub fn stop() {
 
 /// 拉起 server：绑定 127.0.0.1:port，绑定失败（端口被占等）同步返回错误。
 fn start(app: &tauri::AppHandle, port: u16) -> Result<(), String> {
-    let cache = app
-        .state::<crate::AppState>()
-        .cache
-        .clone();
+    // factory 每个会话调用一次，捕获 AppHandle 供工具实时读 settings 与共享状态
+    let app = app.clone();
 
     // 在当前上下文完成 bind，端口冲突能立即报给调用方；
     // 随后把 listener 交给后台任务 serve
@@ -90,7 +114,7 @@ fn start(app: &tauri::AppHandle, port: u16) -> Result<(), String> {
 
     let service =
         rmcp::transport::streamable_http_server::tower::StreamableHttpService::new(
-            move || Ok(LingjianServer::new(cache.clone())),
+            move || Ok(LingjianServer::new(app.clone())),
             std::sync::Arc::new(
                 rmcp::transport::streamable_http_server::session::local::LocalSessionManager::default(),
             ),
@@ -134,5 +158,6 @@ pub fn status(app: &tauri::AppHandle) -> McpStatus {
         running: running_port.is_some(),
         port,
         listening_url: running_port.map(|p| format!("http://127.0.0.1:{p}/mcp")),
+        allow_write: read_allow_write(app),
     }
 }
