@@ -27,11 +27,14 @@ pub struct McpStatus {
     pub listening_url: Option<String>,
     /// 是否开放写操作（settings.json 的 mcpAllowWrite）
     pub allow_write: bool,
+    /// 最近一次启动失败原因（enabled 但未 running 时供设置页展示，成功启动后清除）
+    pub last_error: Option<String>,
 }
 
 struct Runtime {
     task: Option<tauri::async_runtime::JoinHandle<()>>,
     port: Option<u16>,
+    last_error: Option<String>,
 }
 
 static RUNTIME: OnceLock<Mutex<Runtime>> = OnceLock::new();
@@ -41,6 +44,7 @@ fn runtime() -> &'static Mutex<Runtime> {
         Mutex::new(Runtime {
             task: None,
             port: None,
+            last_error: None,
         })
     })
 }
@@ -72,19 +76,16 @@ pub fn read_allow_write(app: &tauri::AppHandle) -> bool {
         .unwrap_or(false)
 }
 
-/// SCF 端点配置（settings.json 的 scfUrl / apiKey）
+/// SCF 端点配置：scfUrl 取 settings.json；apiKey 取系统钥匙串
+/// （敏感凭证不落明文，见 commands::settings::migrate_api_key）
 pub fn read_scf_settings(app: &tauri::AppHandle) -> (String, String) {
     use tauri_plugin_store::StoreExt;
-    let Ok(store) = app.store("settings.json") else {
-        return (String::new(), String::new());
-    };
-    let url = store
-        .get("scfUrl")
-        .and_then(|v| v.as_str().map(String::from))
+    let url = app
+        .store("settings.json")
+        .ok()
+        .and_then(|s| s.get("scfUrl").and_then(|v| v.as_str().map(String::from)))
         .unwrap_or_default();
-    let key = store
-        .get("apiKey")
-        .and_then(|v| v.as_str().map(String::from))
+    let key = crate::services::secret::get(crate::services::secret::Secret::ScfApiKey)
         .unwrap_or_default();
     (url, key)
 }
@@ -141,7 +142,16 @@ pub fn apply_config(app: &tauri::AppHandle) -> Result<McpStatus, String> {
     stop();
     let (enabled, port) = read_mcp_settings(app);
     if enabled {
-        start(app, port)?;
+        // 启动失败（端口被占等）记录原因，供设置页展示；否则用户只见「已停止」无从排查
+        if let Err(e) = start(app, port) {
+            if let Ok(mut r) = runtime().lock() {
+                r.last_error = Some(e.clone());
+            }
+            return Err(e);
+        }
+    }
+    if let Ok(mut r) = runtime().lock() {
+        r.last_error = None;
     }
     Ok(status(app))
 }
@@ -159,5 +169,9 @@ pub fn status(app: &tauri::AppHandle) -> McpStatus {
         port,
         listening_url: running_port.map(|p| format!("http://127.0.0.1:{p}/mcp")),
         allow_write: read_allow_write(app),
+        last_error: runtime()
+            .lock()
+            .ok()
+            .and_then(|r| r.last_error.clone()),
     }
 }

@@ -402,7 +402,7 @@ impl LingjianServer {
 
     #[tool(
         name = "add_comment",
-        description = "在 GitHub Issue 上发表评论（需灵鉴设置页开启「允许写操作」）"
+        description = "在 GitHub Issue 上发表评论（经灵鉴本机端 → SCF 服务端代理转发，需灵鉴设置页开启「允许写操作」）"
     )]
     async fn add_comment(
         &self,
@@ -415,7 +415,7 @@ impl LingjianServer {
 
     #[tool(
         name = "update_labels",
-        description = "整体替换 GitHub Issue 的标签集合（需灵鉴设置页开启「允许写操作」）。注意是替换而非追加，调用前先用 list_issues 确认现有标签"
+        description = "整体替换 GitHub Issue 的标签集合（经 SCF 代理转发，需灵鉴设置页开启「允许写操作」）。注意是替换而非追加，调用前先用 list_issues 确认现有标签"
     )]
     async fn update_labels(
         &self,
@@ -428,7 +428,7 @@ impl LingjianServer {
 
     #[tool(
         name = "close_issue",
-        description = "关闭 GitHub Issue（需灵鉴设置页开启「允许写操作」）。如需附说明，先调用 add_comment"
+        description = "关闭 GitHub Issue（经 SCF 代理转发，需灵鉴设置页开启「允许写操作」）。如需附说明，先调用 add_comment"
     )]
     async fn close_issue(
         &self,

@@ -8,6 +8,7 @@ interface McpStatus {
   port: number
   listeningUrl: string | null
   allowWrite: boolean
+  lastError: string | null
 }
 
 const status = ref<McpStatus | null>(null)
@@ -25,33 +26,59 @@ const zcodeConfig = computed(
 
 async function refresh() {
   try {
-    status.value = await invoke<McpStatus>('mcp_status')
-    enabled.value = status.value.enabled
-    port.value = status.value.port
-    allowWrite.value = status.value.allowWrite
+    syncFromStatus(await invoke<McpStatus>('mcp_status'))
   } catch (e) {
     showMessage(`状态查询失败: ${e}`, 'error')
   }
 }
 
-async function onApply() {
+/** 用后端返回的状态回填表单，保证 UI 与持久化一致（保存失败时不显示假状态） */
+function syncFromStatus(s: McpStatus) {
+  status.value = s
+  enabled.value = s.enabled
+  port.value = s.port
+  allowWrite.value = s.allowWrite
+}
+
+/**
+ * 保存并应用 MCP 配置。
+ * 开关勾选即触发（端口取已持久化值，避免输入框里改了一半的值干扰），
+ * 端口修改仍走「应用配置」按钮。
+ */
+async function applyConfig(cfg: { enabled: boolean; port: number; allowWrite: boolean }) {
   applying.value = true
   message.value = null
   try {
-    status.value = await invoke<McpStatus>('mcp_set_config', {
-      enabled: enabled.value,
-      port: port.value,
-      allowWrite: allowWrite.value,
-    })
+    // mcp_set_config 在启动失败（端口被占等）时直接报错，成功即运行或已关闭
+    syncFromStatus(await invoke<McpStatus>('mcp_set_config', cfg))
     showMessage(
-      status.value.running ? `已启动，监听 ${status.value.listeningUrl}` : 'MCP 已关闭',
+      status.value!.running ? `已启动，监听 ${status.value!.listeningUrl}` : 'MCP 已关闭',
       'success',
     )
   } catch (e) {
     showMessage(typeof e === 'string' ? e : String(e), 'error')
+    // 失败后回读磁盘状态回填表单，避免勾选态与实际持久化不一致
+    await refresh()
   } finally {
     applying.value = false
   }
+}
+
+/** 开关变化立即保存生效（端口用最近一次持久化值） */
+function onToggleChange() {
+  applyConfig({
+    enabled: enabled.value,
+    port: status.value?.port ?? port.value,
+    allowWrite: allowWrite.value,
+  })
+}
+
+async function onApply() {
+  await applyConfig({
+    enabled: enabled.value,
+    port: port.value,
+    allowWrite: allowWrite.value,
+  })
 }
 
 async function onCopyConfig() {
@@ -86,20 +113,24 @@ onMounted(refresh)
       </span>
       <span v-if="status.running" class="info-url">{{ status.listeningUrl }}</span>
     </div>
+    <p v-if="status?.enabled && !status?.running && status?.lastError" class="message error">
+      启动失败：{{ status.lastError }}（可在下方修改端口后重试）
+    </p>
 
     <div class="field">
       <label class="switch-row">
-        <input v-model="enabled" type="checkbox" class="switch-input" />
+        <input v-model="enabled" type="checkbox" class="switch-input" :disabled="applying" @change="onToggleChange" />
         <span class="switch-label">开放 MCP 服务（供 ZCode 等 AI 工具查询分析结果）</span>
       </label>
+      <p class="field-hint switch-hint">勾选即保存生效，无需点击应用配置</p>
     </div>
 
     <div class="field">
       <label class="switch-row">
-        <input v-model="allowWrite" type="checkbox" class="switch-input" />
-        <span class="switch-label">允许写操作（AI 可评论 / 改标签 / 关闭 GitHub Issue）</span>
+        <input v-model="allowWrite" type="checkbox" class="switch-input" :disabled="applying" @change="onToggleChange" />
+        <span class="switch-label">允许写操作（AI 评论 / 改标签 / 关闭 Issue，经 SCF 代理回写 GitHub）</span>
       </label>
-      <p class="field-hint">默认关闭；开启后 AI 代理才能执行回写类操作，请确认信任调用方</p>
+      <p class="field-hint switch-hint">默认关闭；勾选即保存生效。写操作由本机代理转发 SCF 服务端执行，请确认信任调用方</p>
     </div>
 
     <div class="field">
@@ -125,12 +156,20 @@ onMounted(refresh)
 
     <p v-if="message" :class="['message', messageType]">{{ message }}</p>
 
-    <p class="hint">
-      将配置片段加入 ZCode 用户配置（~/.zcode/cli/config.json 的 mcp.servers）后，即可在任意
-      ZCode 会话中查询灵鉴的分析结果。可用工具：list_issues / get_report / analyze_report /
-      query_logs / sync_latest（同步远端上报），开启写操作后另有 add_comment / update_labels /
-      close_issue。
-    </p>
+    <div class="hint">
+      <p>
+        将配置片段加入 ZCode 用户配置（~/.zcode/cli/config.json 的 mcp.servers）后，
+        即可在任意 ZCode 会话中查询灵鉴的分析结果。
+      </p>
+      <p>
+        查询类：<code>list_issues</code> <code>get_report</code> <code>analyze_report</code>
+        <code>query_logs</code> <code>sync_latest</code>（同步远端上报）
+      </p>
+      <p>
+        回写类（需开启「允许写操作」）：<code>add_comment</code> <code>update_labels</code>
+        <code>close_issue</code>
+      </p>
+    </div>
   </section>
 </template>
 
@@ -199,8 +238,13 @@ onMounted(refresh)
   cursor: pointer;
 }
 
+/* 原生 checkbox 高分屏下偏小，放大到与开关文字同高改善可点性 */
 .switch-input {
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
   accent-color: var(--color-primary);
+  cursor: pointer;
 }
 
 .switch-label {
@@ -238,6 +282,11 @@ onMounted(refresh)
   margin-top: 0.25rem;
   font-size: 0.7rem;
   color: var(--color-text-muted);
+}
+
+/* 开关的说明与开关文字对齐（checkbox 1rem + gap 0.5rem） */
+.switch-hint {
+  padding-left: 1.5rem;
 }
 
 .actions {
@@ -284,6 +333,18 @@ onMounted(refresh)
   border-top: 1px solid var(--color-border);
   font-size: 0.7rem;
   color: var(--color-text-muted);
-  line-height: 1.6;
+  line-height: 1.7;
+}
+
+.hint p + p {
+  margin-top: 0.25rem;
+}
+
+.hint code {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  padding: 0.05rem 0.3rem;
+  background-color: var(--color-surface-alt);
+  border-radius: 3px;
 }
 </style>
