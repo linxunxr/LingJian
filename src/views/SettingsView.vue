@@ -63,7 +63,7 @@ onMounted(async () => {
   <div class="settings">
     <h2 class="settings-title">设置</h2>
     <p class="settings-hint">
-      SCF URL 与 API Key 保存于本机配置文件（settings.json），不随上报外传
+      API Key 加密存储于系统凭据管理器（钥匙串），SCF URL 存于本机配置文件
     </p>
 
     <section class="card">
@@ -75,7 +75,7 @@ onMounted(async () => {
       <div class="field">
         <label class="field-label">API Key</label>
         <input v-model="settings.apiKey" type="password" class="field-input" placeholder="端点鉴权密钥" />
-        <p class="field-hint">同一个 API Key 同时用于解析 Issue 和下载日志</p>
+        <p class="field-hint">同一个 API Key 同时用于解析 Issue 和下载日志，保存后写入系统凭据管理器</p>
       </div>
       <div class="verify-row">
         <button class="verify-btn" :disabled="verifyingScf" @click="verifyScf">
