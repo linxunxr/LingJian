@@ -45,6 +45,8 @@ async function gitee(path, init = {}) {
   const resp = await fetch(`${GITEE_API}${path}`, {
     ...init,
     headers: { authorization: `token ${token}`, ...(init.headers || {}) },
+    // 与 sync-release-to-gitee.mjs 同因：无超时的 fetch 在 CI 链路异常时会无限挂起
+    signal: AbortSignal.timeout(30_000),
   })
   const text = await resp.text()
   let body
