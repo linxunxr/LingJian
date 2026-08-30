@@ -122,7 +122,7 @@ onMounted(refresh)
         <input v-model="enabled" type="checkbox" class="switch-input" :disabled="applying" @change="onToggleChange" />
         <span class="switch-label">开放 MCP 服务（供 ZCode 等 AI 工具查询分析结果）</span>
       </label>
-      <p class="field-hint">勾选即保存生效，无需点击应用配置</p>
+      <p class="field-hint switch-hint">勾选即保存生效，无需点击应用配置</p>
     </div>
 
     <div class="field">
@@ -130,7 +130,7 @@ onMounted(refresh)
         <input v-model="allowWrite" type="checkbox" class="switch-input" :disabled="applying" @change="onToggleChange" />
         <span class="switch-label">允许写操作（AI 评论 / 改标签 / 关闭 Issue，经 SCF 代理回写 GitHub）</span>
       </label>
-      <p class="field-hint">默认关闭；勾选即保存生效。写操作由本机代理转发 SCF 服务端执行，请确认信任调用方</p>
+      <p class="field-hint switch-hint">默认关闭；勾选即保存生效。写操作由本机代理转发 SCF 服务端执行，请确认信任调用方</p>
     </div>
 
     <div class="field">
@@ -156,12 +156,20 @@ onMounted(refresh)
 
     <p v-if="message" :class="['message', messageType]">{{ message }}</p>
 
-    <p class="hint">
-      将配置片段加入 ZCode 用户配置（~/.zcode/cli/config.json 的 mcp.servers）后，即可在任意
-      ZCode 会话中查询灵鉴的分析结果。可用工具：list_issues / get_report / analyze_report /
-      query_logs / sync_latest（同步远端上报），开启写操作后另有 add_comment / update_labels /
-      close_issue。
-    </p>
+    <div class="hint">
+      <p>
+        将配置片段加入 ZCode 用户配置（~/.zcode/cli/config.json 的 mcp.servers）后，
+        即可在任意 ZCode 会话中查询灵鉴的分析结果。
+      </p>
+      <p>
+        查询类：<code>list_issues</code> <code>get_report</code> <code>analyze_report</code>
+        <code>query_logs</code> <code>sync_latest</code>（同步远端上报）
+      </p>
+      <p>
+        回写类（需开启「允许写操作」）：<code>add_comment</code> <code>update_labels</code>
+        <code>close_issue</code>
+      </p>
+    </div>
   </section>
 </template>
 
@@ -230,8 +238,13 @@ onMounted(refresh)
   cursor: pointer;
 }
 
+/* 原生 checkbox 高分屏下偏小，放大到与开关文字同高改善可点性 */
 .switch-input {
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
   accent-color: var(--color-primary);
+  cursor: pointer;
 }
 
 .switch-label {
@@ -269,6 +282,11 @@ onMounted(refresh)
   margin-top: 0.25rem;
   font-size: 0.7rem;
   color: var(--color-text-muted);
+}
+
+/* 开关的说明与开关文字对齐（checkbox 1rem + gap 0.5rem） */
+.switch-hint {
+  padding-left: 1.5rem;
 }
 
 .actions {
@@ -315,6 +333,18 @@ onMounted(refresh)
   border-top: 1px solid var(--color-border);
   font-size: 0.7rem;
   color: var(--color-text-muted);
-  line-height: 1.6;
+  line-height: 1.7;
+}
+
+.hint p + p {
+  margin-top: 0.25rem;
+}
+
+.hint code {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  padding: 0.05rem 0.3rem;
+  background-color: var(--color-surface-alt);
+  border-radius: 3px;
 }
 </style>
