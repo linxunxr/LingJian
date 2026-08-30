@@ -63,7 +63,7 @@ onMounted(async () => {
   <div class="settings">
     <h2 class="settings-title">设置</h2>
     <p class="settings-hint">
-      API Key 加密存储于系统钥匙串，SCF URL 存于本地配置文件
+      SCF URL 与 API Key 保存于本机配置文件（settings.json），不随上报外传
     </p>
 
     <section class="card">
@@ -81,19 +81,16 @@ onMounted(async () => {
         <button class="verify-btn" :disabled="verifyingScf" @click="verifyScf">
           {{ verifyingScf ? '测试中...' : '测试下载' }}
         </button>
+        <button class="save-btn" :disabled="saving" @click="onSave">
+          {{ saving ? '保存中...' : '保存设置' }}
+        </button>
         <span v-if="scfResult" :class="['verify-result', scfResult.ok ? 'ok' : 'fail']">
           {{ scfResult.ok ? '✓' : '✗' }} {{ scfResult.msg }}
         </span>
+        <span v-else-if="saved" class="saved-tip">✓ 已保存</span>
+        <span v-else-if="error" class="error-tip">{{ error }}</span>
       </div>
     </section>
-
-    <div class="actions">
-      <button class="save-btn" :disabled="saving" @click="onSave">
-        {{ saving ? '保存中...' : '保存设置' }}
-      </button>
-      <span v-if="saved" class="saved-tip">✓ 已保存</span>
-      <span v-else-if="error" class="error-tip">{{ error }}</span>
-    </div>
 
     <McpCard />
 
@@ -120,12 +117,12 @@ onMounted(async () => {
   flex-shrink: 0;
 }
 
-/* 关于 + 数据管理双栏：缩短纵向长度，窄窗口自动退化为单列 */
+/* 关于 + 数据管理双栏：缩短纵向长度，窄窗口自动退化为单列。
+   两卡片等高（默认 stretch），避免内容少的一侧底部塌陷 */
 .card-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 1rem;
-  align-items: start;
   margin-bottom: 1rem;
 }
 
@@ -204,11 +201,17 @@ onMounted(async () => {
   color: var(--color-text-muted);
 }
 
+/* 卡片内操作行：次要（测试下载）+ 主要（保存设置）按钮同高并排，右侧留验证/保存结果 */
 .verify-row {
   display: flex;
   align-items: center;
   gap: 0.625rem;
   margin-top: 0.625rem;
+}
+
+.verify-row .save-btn {
+  padding: 0.375rem 1rem;
+  font-size: 0.75rem;
 }
 
 .verify-btn {
@@ -241,13 +244,6 @@ onMounted(async () => {
 
 .verify-result.fail {
   color: var(--color-danger);
-}
-
-.actions {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  margin-bottom: 1rem;
 }
 
 .save-btn {
