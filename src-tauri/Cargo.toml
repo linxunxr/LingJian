@@ -26,7 +26,14 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 regex = "1"
 log = "0.4"
 chrono = "0.4"
-keyring = "3"
+# keyring 3.x 平台后端是显式 feature、无默认值：不开会静默落 mock 后端
+# （进程内 HashMap，写"成功"即丢）——7 月"钥匙串写入静默失败"的真相即此。
+# 三平台按目标启用真实后端；Linux 用 sync-secret-service（桌面常见 Secret Service）。
+keyring = { version = "3", features = [
+    "windows-native",
+    "apple-native",
+    "sync-secret-service",
+] }
 uuid = { version = "1", features = ["v4"] }
 rmcp = { version = "3.1.4", features = ["server", "macros", "transport-streamable-http-server"] }
 axum = "0.8.9"
