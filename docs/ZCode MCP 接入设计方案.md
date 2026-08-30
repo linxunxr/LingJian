@@ -6,6 +6,7 @@
 
 | 日期       | 变更内容                                                                             |
 |------------|--------------------------------------------------------------------------------------|
+| 2026-08-30 | 回填二期实施记录：四工具落地于 feat/mcp-phase2 分支（PR 流程），写操作守门采用 mcpAllowWrite 设置开关 |
 | 2026-08-30 | 回填实施记录：一期四工具已在 feat/mcp-server 分支落地并全量验证通过，附与方案的差异说明 |
 | 2026-08-29 | v2：形态改为桌面端托管——删独立进程与 core 抽取方案，新增设置页配置界面与 HTTP transport 设计 |
 | 2026-08-29 | 补"MCP server 生命周期"小节（stdio 形态，已被 v2 取代）                               |
@@ -213,16 +214,18 @@ impl ServerHandler for LingjianServer {}
 
 `LogEntryDto`：`timestamp`、`level`、`tag`、`message`、`data`。
 
-## 6. 二期规划（动作类，另行评审后实施）
+## 6. 二期：动作类工具（已于 2026-08-30 实施，feat/mcp-phase2 分支）
 
-| 工具           | 能力                     | 依赖与风险                                       |
-|----------------|--------------------------|--------------------------------------------------|
-| sync_latest    | 从 SCF 拉最新上报并落库  | SCF 契约（Scf 仓库 `API契约.md`）                 |
-| add_comment    | 回写 Issue 评论           | GitHub token（进程内 keyring 直接可用——托管形态红利） |
-| update_labels  | 更新 Issue 标签           | 同上                                             |
-| close_issue    | 关闭 Issue                | 同上                                             |
+| 工具           | 能力                     | 实现要点                                       |
+|----------------|--------------------------|------------------------------------------------|
+| sync_latest    | 从 SCF 拉最新上报并落库  | 新条目先 resolve_issue 取完整元信息（用户反馈/游玩时长仅该端点返回）再下载落库；本地已有跳过；服务端日志包过期的旧上报 404 如实报告不阻断 |
+| add_comment    | 回写 Issue 评论           | 复用 `downloader::act_on_issue`（SCF 代理，GitHub token 在服务端） |
+| update_labels  | 更新 Issue 标签           | 同上；setLabels 为整体替换语义，工具描述已注明 |
+| close_issue    | 关闭 Issue                | 同上；需附说明时先调 add_comment               |
 
-托管形态下凭证与写库都在灵鉴进程内（keyring、`Arc<Cache>`），写操作的工具实现与服务层平级，无跨进程/凭证迁移问题；主要评审点是外部副作用的确认机制（写操作前是否需用户在桌面端确认）与 token 鉴权。
+**写操作守门**：评审定为 settings 键 `mcpAllowWrite`（默认关）——设置页 MCP 分区提供开关，写工具在开关关闭时调用被拒并提示。相比 token 鉴权更轻（localhost 信任边界已足够，真实风险是 AI 误操作，显式开关即授权边界）；相比逐次弹窗确认更顺滑（MCP 是程序化调用，弹窗会阻塞）。
+
+**遗留说明**：sync_latest 落库的 playTime 由 SCF 字符串解析为秒数（与 download_log 命令行为一致）；reopen 动作未开放为 MCP 工具（防误操作，需要时走灵鉴界面）。
 
 ## 7. ZCode 侧接入
 
