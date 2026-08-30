@@ -18,8 +18,9 @@ use crate::services::downloader;
 use super::dto::{
     AddCommentParams, AnalysisResultDto, AnalyzeReportParams, CloseIssueParams, ErrorAggregateDto,
     GetReportParams, IssueActionResultDto, IssueBriefDto, IssueListResult, LevelCountsDto,
-    ListIssuesParams, LogEntryDto, LogFilterDto, QueryLogsParams, QueryLogsResult, RemoteIssueDto,
-    SyncLatestParams, SyncResultDto, TagCountDto, TimelinePointDto, UpdateLabelsParams,
+    ListIssuesParams, LogEntryDto, LogFilterDto, QueryLogsParams, QueryLogsResult,
+    RemoteIssueDto, ReopenIssueParams, SyncLatestParams, SyncResultDto, TagCountDto,
+    TimelinePointDto, UpdateLabelsParams,
 };
 
 /// 灵鉴 MCP server。每个 HTTP 会话一个实例，经 AppHandle 共享应用状态。
@@ -82,7 +83,7 @@ impl LingjianServer {
             .map_err(|e| ErrorData::internal_error(format!("查询日志失败: {e}"), None))
     }
 
-    /// 统一的 Issue 操作入口（评论/标签/关闭），SCF 代理转发 GitHub
+    /// 统一的 Issue 操作入口（评论/标签/关闭/重开），SCF 代理转发 GitHub
     async fn act_on_issue(
         &self,
         number: u32,
@@ -100,7 +101,74 @@ impl LingjianServer {
             ok: r.ok,
             state: r.state,
             labels: r.labels,
+            followup_notes: Vec::new(),
         })
+    }
+
+    /// 与灵鉴界面「关闭 Issue」一致的完整流程：关闭 → 追加 v<版本号> 标签 → 解决评论。
+    ///
+    /// 与 CloseIssueDialog 的取舍相同：关闭是主目标必须成功；标签/评论是次要
+    /// 步骤，失败不回滚已关闭状态，进 followup_notes 让调用方知晓后可自行补做。
+    async fn close_issue_full(
+        &self,
+        number: u32,
+        fixed_in: &str,
+    ) -> Result<IssueActionResultDto, ErrorData> {
+        self.write_allowed()?;
+        let (scf_url, api_key) = self.scf_config()?;
+        let client = self.app.state::<crate::AppState>().client.clone();
+
+        // 先取当前标签（追加需基于现状，setLabels 是整体替换）
+        let current = downloader::resolve_issue(&scf_url, number, &api_key, &client)
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("获取 Issue #{number} 现状失败: {e}"), None))?;
+        let tag_label = format!("v{}", fixed_in.trim().trim_start_matches('v'));
+
+        // 1) 关闭——主目标，失败直接报错
+        let mut result = self
+            .act_on_issue(number, "close", None, None)
+            .await?;
+
+        // 2) 追加版本标签 + 3) 解决评论——次要步骤，失败记录不阻断
+        let mut notes = Vec::new();
+        let new_labels: Vec<String> = {
+            let mut l = current.labels.clone();
+            if !l.contains(&tag_label) {
+                l.push(tag_label.clone());
+            }
+            l
+        };
+        if let Err(e) = downloader::act_on_issue(
+            &scf_url,
+            number,
+            "setLabels",
+            None,
+            Some(&new_labels),
+            &api_key,
+            &client,
+        )
+        .await
+        {
+            notes.push(format!("追加版本标签 {tag_label} 失败: {e}"));
+        } else {
+            result.labels = Some(new_labels);
+        }
+        if let Err(e) = downloader::act_on_issue(
+            &scf_url,
+            number,
+            "comment",
+            Some(&format!("已在挂机仙途 v{} 中标记为已处理", tag_label.trim_start_matches('v'))),
+            None,
+            &api_key,
+            &client,
+        )
+        .await
+        {
+            notes.push(format!("发表解决评论失败: {e}"));
+        }
+
+        result.followup_notes = notes;
+        Ok(result)
     }
 }
 
@@ -428,13 +496,27 @@ impl LingjianServer {
 
     #[tool(
         name = "close_issue",
-        description = "关闭 GitHub Issue（经 SCF 代理转发，需灵鉴设置页开启「允许写操作」）。如需附说明，先调用 add_comment"
+        description = "关闭 GitHub Issue（经 SCF 代理转发，需灵鉴设置页开启「允许写操作」）。传 fixed_in 版本号时执行与灵鉴界面一致的完整流程：关闭 + 追加 v<版本号> 标签 + 发表解决评论；不传则仅关闭。AI 定位修复后建议带上修复版本号"
     )]
     async fn close_issue(
         &self,
-        Parameters(CloseIssueParams { issue_number }): Parameters<CloseIssueParams>,
+        Parameters(CloseIssueParams { issue_number, fixed_in }): Parameters<CloseIssueParams>,
     ) -> Result<Json<IssueActionResultDto>, ErrorData> {
-        self.act_on_issue(issue_number, "close", None, None)
+        match fixed_in.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(v) => self.close_issue_full(issue_number, v).await.map(Json),
+            None => self.act_on_issue(issue_number, "close", None, None).await.map(Json),
+        }
+    }
+
+    #[tool(
+        name = "reopen_issue",
+        description = "重新打开已关闭的 GitHub Issue（经 SCF 代理转发，需灵鉴设置页开启「允许写操作」），与灵鉴界面的「重新打开」一致"
+    )]
+    async fn reopen_issue(
+        &self,
+        Parameters(ReopenIssueParams { issue_number }): Parameters<ReopenIssueParams>,
+    ) -> Result<Json<IssueActionResultDto>, ErrorData> {
+        self.act_on_issue(issue_number, "reopen", None, None)
             .await
             .map(Json)
     }
@@ -443,6 +525,6 @@ impl LingjianServer {
 // get_info 由 #[tool_handler] 生成，名称/引导语在此定制（version 宏属性不支持表达式，用默认值）
 #[tool_handler(
     name = "lingjian",
-    instructions = "灵鉴（LingJian）日志分析工具。先用 list_issues 看已下载的上报（sync_latest 可从 SCF 同步新上报），analyze_report 获取错误聚合与统计，query_logs 分页查看原始日志；分析定位后可用 add_comment / update_labels / close_issue 回写处理结果（写操作需灵鉴设置页开启「允许写操作」）。"
+    instructions = "灵鉴（LingJian）日志分析工具。先用 list_issues 看已下载的上报（sync_latest 可从 SCF 同步新上报），analyze_report 获取错误聚合与统计，query_logs 分页查看原始日志；分析定位后回写处理结果：close_issue 传 fixed_in 版本号即走完整关单流程（关闭+版本标签+解决评论，与灵鉴界面一致），另有 add_comment / update_labels / reopen_issue（写操作需灵鉴设置页开启「允许写操作」）。"
 )]
 impl ServerHandler for LingjianServer {}
