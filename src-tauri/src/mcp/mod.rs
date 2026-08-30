@@ -76,19 +76,16 @@ pub fn read_allow_write(app: &tauri::AppHandle) -> bool {
         .unwrap_or(false)
 }
 
-/// SCF 端点配置（settings.json 的 scfUrl / apiKey）
+/// SCF 端点配置：scfUrl 取 settings.json；apiKey 取系统钥匙串
+/// （敏感凭证不落明文，见 commands::settings::migrate_api_key）
 pub fn read_scf_settings(app: &tauri::AppHandle) -> (String, String) {
     use tauri_plugin_store::StoreExt;
-    let Ok(store) = app.store("settings.json") else {
-        return (String::new(), String::new());
-    };
-    let url = store
-        .get("scfUrl")
-        .and_then(|v| v.as_str().map(String::from))
+    let url = app
+        .store("settings.json")
+        .ok()
+        .and_then(|s| s.get("scfUrl").and_then(|v| v.as_str().map(String::from)))
         .unwrap_or_default();
-    let key = store
-        .get("apiKey")
-        .and_then(|v| v.as_str().map(String::from))
+    let key = crate::services::secret::get(crate::services::secret::Secret::ScfApiKey)
         .unwrap_or_default();
     (url, key)
 }

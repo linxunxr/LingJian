@@ -114,6 +114,7 @@ pub fn run() {
             secret::get_secret,
             secret::delete_secret,
             settings::test_scf_endpoint,
+            settings::migrate_api_key,
             commands::mcp::mcp_set_config,
             commands::mcp::mcp_status,
             storage::get_storage_info,
