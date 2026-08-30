@@ -1,0 +1,44 @@
+# 手动触发的 Gitee 附件补传工作流。
+# 背景：v0.4.2 发布时 CI runner → Gitee 链路异常，附件上传步骤因 fetch 无超时
+# 挂死（已修复：脚本补 30s 超时）；latest.json 已同步成功、发行版已建，仅缺附件。
+# 本工作流复用 sync-to-gitee 的逻辑（脚本幂等：发行版复用、已有附件跳过），
+# 按 tag 参数补传。附件补齐后本文件保留，作为发布事故的标准补数手段。
+name: Resync Gitee
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要补传附件的 tag（如 v0.4.2）'
+        required: true
+        type: string
+
+jobs:
+  resync:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Download all release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p dist
+          gh release download "${{ inputs.tag }}" \
+            --repo linxunxr/LingJian \
+            --dir dist \
+            --clobber
+
+      - name: Sync release and manifest to Gitee
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GITEE_OWNER: mwcxlinxun
+          GITEE_REPO: ling-jian
+        run: |
+          node scripts/sync-release-to-gitee.mjs dist "${{ inputs.tag }}"
