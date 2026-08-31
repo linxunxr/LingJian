@@ -43,3 +43,13 @@ pub async fn export_report(
 
     Ok(ExportResult { path, bytes })
 }
+
+/// 将前端生成的文本内容写入指定路径（排行榜 CSV 导出等用）。
+///
+/// 与 export_report 同模式：前端先用 dialog save 拿到目标路径，此命令只负责写盘。
+#[tauri::command]
+pub async fn save_text_file(path: String, content: String) -> Result<ExportResult, String> {
+    let bytes = content.len();
+    std::fs::write(&path, content).map_err(|e| format!("写入文件失败: {e}"))?;
+    Ok(ExportResult { path, bytes })
+}

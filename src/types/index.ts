@@ -33,6 +33,10 @@ export interface IssueInfo extends ParsedIssue {
   userDescription?: string
   /** 游玩时长（秒，字符串形式；旧版 SCF 不返回） */
   playTime?: string
+  /** 玩家身份标识（steam:SteamID64 / device:UUID；老 Issue/旧版 SCF 不返回） */
+  playerId?: string
+  /** 玩家昵称（Steam personaName，仅展示；老 Issue/旧版 SCF 不返回） */
+  playerName?: string
 }
 
 /** 问题列表项（首页列表展示用） */
@@ -52,6 +56,10 @@ export interface IssueListItem {
   realm?: string
   /** 当前标签列表 */
   labels?: string[]
+  /** 玩家身份标识（steam:SteamID64 / device:UUID；老 Issue/旧版 SCF 不返回） */
+  playerId?: string
+  /** 玩家昵称（Steam personaName，仅展示；老 Issue/旧版 SCF 不返回） */
+  playerName?: string
 }
 
 /** SCF /issues 端点的完整响应 */

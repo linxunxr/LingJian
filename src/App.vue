@@ -13,6 +13,7 @@ const showOnboarding = ref(false)
 const navItems = [
   { to: '/', name: 'home', label: '首页' },
   { to: '/analyze', name: 'analyze', label: '分析' },
+  { to: '/leaderboard', name: 'leaderboard', label: '排行' },
   { to: '/settings', name: 'settings', label: '设置' },
 ]
 

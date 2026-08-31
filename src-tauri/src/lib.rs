@@ -110,6 +110,7 @@ pub fn run() {
             reports::list_recent_reports,
             reports::get_report,
             export_::export_report,
+            export_::save_text_file,
             secret::set_secret,
             secret::get_secret,
             secret::delete_secret,
