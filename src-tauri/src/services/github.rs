@@ -49,6 +49,12 @@ pub struct IssueInfo {
     /// 游玩时长（秒，body 环境表格提取，字符串形式；旧版 SCF 不返回）
     #[serde(default)]
     pub play_time: Option<String>,
+    /// 玩家身份标识（steam:SteamID64 / device:UUID，反馈排行榜聚合键；老 Issue 无此字段）
+    #[serde(default)]
+    pub player_id: Option<String>,
+    /// 玩家昵称（Steam personaName，仅展示；老 Issue 无此字段）
+    #[serde(default)]
+    pub player_name: Option<String>,
 }
 
 /// Issue 列表项（SCF `/issues` 端点返回）
@@ -77,6 +83,12 @@ pub struct IssueListItem {
     /// 当前标签（操作后更新）
     #[serde(default)]
     pub labels: Option<Vec<String>>,
+    /// 玩家身份标识（steam:SteamID64 / device:UUID，反馈排行榜聚合键；老 Issue/老 SCF 无此字段）
+    #[serde(default)]
+    pub player_id: Option<String>,
+    /// 玩家昵称（Steam personaName，仅展示；老 Issue/老 SCF 无此字段）
+    #[serde(default)]
+    pub player_name: Option<String>,
 }
 
 /// SCF `/issues` 端点的完整响应
