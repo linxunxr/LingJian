@@ -1,7 +1,9 @@
 use flate2::read::GzDecoder;
+use regex::Regex;
 use serde::Deserialize;
 use std::io::Read;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use crate::models::log_entry::{LogEntry, LogLevel};
 use crate::services::github::{IssueActionResponse, IssueInfo, IssueList};
@@ -317,6 +319,78 @@ pub async fn download(
     Ok((entries, file_size))
 }
 
+/// 截图 COS key 文件名白名单：{reportId}{_N}.png（与 SCF 端点约定一致）
+///
+/// 拼接本地缓存路径前先校验，防 `../` 等构造的 key 越权写盘。
+fn screenshot_filename_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(_\d+)?\.png$",
+        )
+        .unwrap()
+    })
+}
+
+/// 从截图 COS key 提取白名单内的文件名（`screenshots/xxx.png` → `xxx.png`）
+fn screenshot_filename(key: &str) -> Result<&str, String> {
+    let filename = key.rsplit('/').next().unwrap_or("");
+    if !screenshot_filename_re().is_match(filename) {
+        return Err(format!("非法截图 key: {key}"));
+    }
+    Ok(filename)
+}
+
+/// 拉取单张反馈截图：本地缓存命中直接返回，否则经 SCF `/screenshots/:filename` 下载后落缓存。
+///
+/// 截图存于 `cache/screenshots/{filename}`（文件名含 reportId，天然按上报隔离），
+/// 与 `.gz` 同目录 —— 清缓存 / 迁移数据目录的递归逻辑自动覆盖。
+/// 返回 `(PNG 字节, 是否命中本地缓存)`。
+pub async fn fetch_screenshot_bytes(
+    scf_url: &str,
+    key: &str,
+    api_key: &str,
+    http: &reqwest::Client,
+    cache_dir: &Path,
+) -> Result<(Vec<u8>, bool), String> {
+    let filename = screenshot_filename(key)?;
+    let local = cache_dir.join("screenshots").join(filename);
+    if local.exists() {
+        let bytes = std::fs::read(&local).map_err(|e| format!("读取截图缓存失败: {e}"))?;
+        return Ok((bytes, true));
+    }
+
+    let url = format!("{}/screenshots/{}", scf_url.trim_end_matches('/'), filename);
+    let resp = http
+        .get(&url)
+        .header("X-API-Key", api_key)
+        .send()
+        .await
+        .map_err(|e| format!("截图下载请求失败: {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("截图下载失败 {status}: {text}"));
+    }
+
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("读取截图响应失败: {e}"))?
+        .to_vec();
+
+    // 落盘缓存（失败不阻断本次展示）
+    if let Some(parent) = local.parent() {
+        if let Err(e) =
+            std::fs::create_dir_all(parent).and_then(|_| std::fs::write(&local, &bytes))
+        {
+            log::warn!("截图缓存写入失败（不影响本次展示）: {e}");
+        }
+    }
+    Ok((bytes, false))
+}
+
 /// 测试 SCF 下载端点连通性。
 ///
 /// 用一个不存在的 reportId 发请求，预期返回 401（鉴权通过但资源不存在）
@@ -488,5 +562,28 @@ mod tests {
         let gz = gzip_json("[]");
         let entries = decode_gzip(&gz).unwrap();
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn screenshot_filename_accepts_valid_keys() {
+        let uuid = "550e8400-e29b-41d4-a716-446655440000";
+        assert_eq!(
+            screenshot_filename(&format!("screenshots/{uuid}.png")).unwrap(),
+            format!("{uuid}.png")
+        );
+        assert_eq!(
+            screenshot_filename(&format!("screenshots/{uuid}_2.png")).unwrap(),
+            format!("{uuid}_2.png")
+        );
+    }
+
+    #[test]
+    fn screenshot_filename_rejects_traversal() {
+        // 路径遍历 / 非法扩展名 / 缺后缀 / 裸文件名均拒绝
+        assert!(screenshot_filename("screenshots/../../logs/x.png").is_err());
+        assert!(screenshot_filename("screenshots/550e8400-e29b-41d4-a716-446655440000.gz").is_err());
+        assert!(screenshot_filename("screenshots/550e8400-e29b-41d4-a716-446655440000").is_err());
+        assert!(screenshot_filename("not-a-key").is_err());
+        assert!(screenshot_filename("").is_err());
     }
 }

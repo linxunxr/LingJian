@@ -1,3 +1,4 @@
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use tauri::{async_runtime::spawn_blocking, State};
 
@@ -17,6 +18,8 @@ pub struct IssueMeta {
     pub realm: Option<String>,
     /// 用户反馈文本（落库 user_description，分析页展示）
     pub user_description: Option<String>,
+    /// 反馈截图 COS key 列表（落库 screenshot_keys，分析页按需拉取展示）
+    pub screenshot_keys: Option<Vec<String>>,
     /// 游玩时长秒数（SCF 返回字符串，此处解析为数字落库）
     pub play_time: Option<u64>,
 }
@@ -65,6 +68,7 @@ pub async fn download_log(
         realm: issue_meta.as_ref().and_then(|m| m.realm.clone()),
         play_time: issue_meta.as_ref().and_then(|m| m.play_time),
         user_description: issue_meta.as_ref().and_then(|m| m.user_description.clone()),
+        screenshot_keys: issue_meta.as_ref().and_then(|m| m.screenshot_keys.clone()),
         report_time: now.clone(),
         log_count,
         downloaded_at: now,
@@ -79,5 +83,47 @@ pub async fn download_log(
         report_id,
         log_count,
         file_size,
+    })
+}
+
+/// 单张反馈截图（data URL 形式，前端 `<img>` 直接消费）
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenshotPayload {
+    /// 截图 COS key（与 IssueMeta.screenshotKeys 元素一致，前端对位）
+    pub key: String,
+    /// `data:image/png;base64,...`
+    pub data_url: String,
+    /// 是否命中本地缓存（未发网络请求）
+    pub cached: bool,
+}
+
+/// 拉取一张反馈截图：本地缓存命中直接返回，否则经 SCF 下载后落缓存。
+///
+/// 前端详情页逐张调用（单次 IPC 体积可控，单张失败不影响其余）。
+#[tauri::command]
+pub async fn fetch_screenshot(
+    key: String,
+    scf_url: String,
+    api_key: String,
+    state: State<'_, crate::AppState>,
+) -> Result<ScreenshotPayload, String> {
+    if scf_url.trim().is_empty() || api_key.trim().is_empty() {
+        return Err("未配置 SCF 下载端点，请先到设置页填写".to_string());
+    }
+
+    let cache_dir = state.cache_dir.clone();
+    let http = state.client.clone();
+    let (bytes, cached) =
+        downloader::fetch_screenshot_bytes(&scf_url, &key, &api_key, &http, &cache_dir).await?;
+
+    let data_url = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(&bytes)
+    );
+    Ok(ScreenshotPayload {
+        key,
+        data_url,
+        cached,
     })
 }

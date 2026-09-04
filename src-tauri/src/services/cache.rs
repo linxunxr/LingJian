@@ -29,6 +29,9 @@ impl Cache {
         if let Err(e) = conn.execute_batch("ALTER TABLE reports ADD COLUMN app_name TEXT;") {
             log::debug!("跳过 app_name 迁移（列已存在）: {e}");
         }
+        if let Err(e) = conn.execute_batch("ALTER TABLE reports ADD COLUMN screenshot_keys TEXT;") {
+            log::debug!("跳过 screenshot_keys 迁移（列已存在）: {e}");
+        }
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -39,6 +42,14 @@ impl Cache {
     pub fn save_report(&self, report: &Report, entries: &[LogEntry]) -> Result<(), String> {
         let mut conn = self.conn.lock().map_err(|e| format!("数据库锁失败: {e}"))?;
 
+        // 截图 key 列表以 JSON 文本落库（SQLite 无数组类型）
+        let screenshot_keys_json = report
+            .screenshot_keys
+            .as_ref()
+            .map(|keys| serde_json::to_string(keys))
+            .transpose()
+            .map_err(|e| format!("序列化截图 key 失败: {e}"))?;
+
         let tx = conn
             .transaction()
             .map_err(|e| format!("开启事务失败: {e}"))?;
@@ -47,8 +58,8 @@ impl Cache {
         tx.execute(
             "INSERT OR REPLACE INTO reports
                 (report_id, issue_number, issue_title, app_name, app_version, platform, realm,
-                 play_time, user_description, report_time, log_count, downloaded_at)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                 play_time, user_description, screenshot_keys, report_time, log_count, downloaded_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             params![
                 report.report_id,
                 report.issue_number,
@@ -59,6 +70,7 @@ impl Cache {
                 report.realm,
                 report.play_time.map(|v| v as i64),
                 report.user_description,
+                screenshot_keys_json,
                 report.report_time,
                 report.log_count as i64,
                 report.downloaded_at,
@@ -151,7 +163,7 @@ impl Cache {
         let mut stmt = conn
             .prepare(
                 "SELECT report_id, issue_number, issue_title, app_name, app_version, platform, realm,
-                        play_time, user_description, report_time, log_count, downloaded_at
+                        play_time, user_description, screenshot_keys, report_time, log_count, downloaded_at
                  FROM reports
                  ORDER BY downloaded_at DESC
                  LIMIT ?",
@@ -175,7 +187,7 @@ impl Cache {
         let mut stmt = conn
             .prepare(
                 "SELECT report_id, issue_number, issue_title, app_name, app_version, platform, realm,
-                        play_time, user_description, report_time, log_count, downloaded_at
+                        play_time, user_description, screenshot_keys, report_time, log_count, downloaded_at
                  FROM reports
                  WHERE report_id = ?",
             )
@@ -195,7 +207,11 @@ impl Cache {
 /// rusqlite 行映射到 Report
 fn row_to_report(row: &rusqlite::Row) -> rusqlite::Result<Report> {
     let play_time_i: Option<i64> = row.get(7)?;
-    let log_count_i: i64 = row.get(10)?;
+    // JSON 文本 → key 数组；解析失败降级 None（仅展示增强，不让脏数据阻断读取）
+    let screenshot_keys = row
+        .get::<_, Option<String>>(9)?
+        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok());
+    let log_count_i: i64 = row.get(11)?;
     Ok(Report {
         report_id: row.get(0)?,
         issue_number: row.get(1)?,
@@ -206,9 +222,10 @@ fn row_to_report(row: &rusqlite::Row) -> rusqlite::Result<Report> {
         realm: row.get(6)?,
         play_time: play_time_i.map(|v| v as u64),
         user_description: row.get(8)?,
-        report_time: row.get(9)?,
+        screenshot_keys,
+        report_time: row.get(10)?,
         log_count: log_count_i as usize,
-        downloaded_at: row.get(11)?,
+        downloaded_at: row.get(12)?,
     })
 }
 
@@ -270,6 +287,7 @@ mod tests {
             realm: None,
             play_time: None,
             user_description: None,
+            screenshot_keys: None,
             report_time: "2026-08-22T10:00:00Z".to_string(),
             log_count: 1,
             downloaded_at: "2026-08-22T10:00:01Z".to_string(),
@@ -288,5 +306,78 @@ mod tests {
         let entries = cache.get_entries("local-x").unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].level, LogLevel::Fatal); // FATAL 级别往返不丢
+    }
+
+    /// screenshot_keys 字段读写往返（JSON 文本落库）
+    #[test]
+    fn save_and_read_screenshot_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("shots.db");
+        let cache = Cache::open(&db).unwrap();
+
+        let report = Report {
+            report_id: "shot-x".to_string(),
+            issue_number: Some(19),
+            issue_title: None,
+            app_name: None,
+            app_version: Some("0.11.9".to_string()),
+            platform: Some("electron".to_string()),
+            realm: None,
+            play_time: None,
+            user_description: Some("战斗界面背景颜色异常".to_string()),
+            screenshot_keys: Some(vec![
+                "screenshots/550e8400-e29b-41d4-a716-446655440000.png".to_string(),
+                "screenshots/550e8400-e29b-41d4-a716-446655440000_1.png".to_string(),
+            ]),
+            report_time: "2026-09-04T11:59:21Z".to_string(),
+            log_count: 1,
+            downloaded_at: "2026-09-04T12:00:44Z".to_string(),
+        };
+        cache.save_report(&report, &[]).unwrap();
+
+        let loaded = cache.get_report("shot-x").unwrap().unwrap();
+        assert_eq!(
+            loaded.screenshot_keys,
+            Some(vec![
+                "screenshots/550e8400-e29b-41d4-a716-446655440000.png".to_string(),
+                "screenshots/550e8400-e29b-41d4-a716-446655440000_1.png".to_string(),
+            ])
+        );
+    }
+
+    /// 旧版库（reports 表无 screenshot_keys 列）打开时自动迁移，无截图记录读出 None
+    #[test]
+    fn open_migrates_screenshot_keys_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("legacy2.db");
+
+        // 构造上一版 schema（有 app_name、无 screenshot_keys）
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE reports (
+                    report_id TEXT PRIMARY KEY,
+                    issue_number INTEGER,
+                    issue_title TEXT,
+                    app_name TEXT,
+                    app_version TEXT,
+                    platform TEXT,
+                    realm TEXT,
+                    play_time INTEGER,
+                    user_description TEXT,
+                    report_time TEXT NOT NULL,
+                    log_count INTEGER NOT NULL DEFAULT 0,
+                    downloaded_at TEXT NOT NULL
+                );
+                INSERT INTO reports VALUES ('r2', NULL, NULL, NULL, NULL, NULL, NULL,
+                    NULL, '旧反馈', '2026-06-08T14:00:00Z', 1, '2026-06-08T15:00:00Z');",
+            )
+            .unwrap();
+        }
+
+        let cache = Cache::open(&db).unwrap();
+        let report = cache.get_report("r2").unwrap().unwrap();
+        assert_eq!(report.user_description.as_deref(), Some("旧反馈"));
+        assert_eq!(report.screenshot_keys, None); // 新列默认 NULL → None
     }
 }

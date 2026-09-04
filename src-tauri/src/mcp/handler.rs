@@ -428,6 +428,7 @@ impl LingjianServer {
                             .and_then(|i| i.play_time.as_deref())
                             .and_then(|s| s.parse::<u64>().ok()),
                         user_description: info.as_ref().and_then(|i| i.user_description.clone()),
+                        screenshot_keys: info.as_ref().and_then(|i| i.screenshot_keys.clone()),
                         report_time: now.clone(),
                         log_count: entries.len(),
                         downloaded_at: now,

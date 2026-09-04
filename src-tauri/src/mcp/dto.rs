@@ -35,6 +35,8 @@ pub struct IssueBriefDto {
     pub play_time: Option<u64>,
     /// 用户原始反馈描述
     pub user_description: Option<String>,
+    /// 反馈截图的 COS key 列表（无截图为 None；图像本体需经灵鉴界面查看）
+    pub screenshot_keys: Option<Vec<String>>,
     pub log_count: usize,
     pub report_time: String,
     pub downloaded_at: String,
@@ -52,6 +54,7 @@ impl From<Report> for IssueBriefDto {
             realm: r.realm,
             play_time: r.play_time,
             user_description: r.user_description,
+            screenshot_keys: r.screenshot_keys,
             log_count: r.log_count,
             report_time: r.report_time,
             downloaded_at: r.downloaded_at,

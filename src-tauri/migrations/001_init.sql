@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS reports (
     realm TEXT,
     play_time INTEGER,
     user_description TEXT,
+    screenshot_keys TEXT,
     report_time TEXT NOT NULL,
     log_count INTEGER NOT NULL DEFAULT 0,
     downloaded_at TEXT NOT NULL

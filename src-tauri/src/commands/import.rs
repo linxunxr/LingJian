@@ -71,6 +71,7 @@ pub async fn import_log_file(
         realm: None,
         play_time: None,
         user_description: None,
+        screenshot_keys: None,
         report_time: now.clone(),
         log_count,
         downloaded_at: now,

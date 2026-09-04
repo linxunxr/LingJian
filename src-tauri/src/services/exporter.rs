@@ -216,6 +216,7 @@ mod tests {
             realm: None,
             play_time: None,
             user_description: None,
+            screenshot_keys: None,
             report_time: "2026-06-08T14:00:00Z".to_string(),
             log_count: 2,
             downloaded_at: "2026-06-08T15:00:00Z".to_string(),

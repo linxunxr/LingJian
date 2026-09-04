@@ -37,6 +37,8 @@ export interface IssueInfo extends ParsedIssue {
   playerId?: string
   /** 玩家昵称（Steam personaName，仅展示；老 Issue/旧版 SCF 不返回） */
   playerName?: string
+  /** 反馈截图的 COS key 列表（SCF 从 Issue body「截图附件」小节提取；无截图/旧版 SCF 不返回） */
+  screenshotKeys?: string[]
 }
 
 /** 问题列表项（首页列表展示用） */
@@ -87,6 +89,8 @@ export interface Report {
   realm?: string
   playTime?: number
   userDescription?: string
+  /** 反馈截图的 COS key 列表（无截图时无此字段） */
+  screenshotKeys?: string[]
   reportTime: string
   logCount: number
   downloadedAt: string
@@ -169,4 +173,6 @@ export interface ReportMeta {
   /** 游玩时长（秒） */
   playTime: number | null
   reportTime: string | null
+  /** 反馈截图的 COS key 列表（无截图为 null；图像本体另行按需拉取） */
+  screenshotKeys: string[] | null
 }
