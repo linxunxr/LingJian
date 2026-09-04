@@ -69,6 +69,20 @@ pub struct IssueListResult {
     pub issues: Vec<IssueBriefDto>,
 }
 
+/// get_report_screenshots 入参
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GetScreenshotsParams {
+    /// 上报编号（reportId）
+    pub report_id: String,
+    /// 起始序号（0 基，默认 0；配合 limit 查看后续截图）
+    #[serde(default)]
+    pub offset: Option<usize>,
+    /// 最多返回几张（1-4，默认 2；图片 token 开销大，逐批查看更省）
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
 /// get_report 入参
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
