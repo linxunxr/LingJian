@@ -22,6 +22,8 @@ pub struct Report {
     pub play_time: Option<u64>,
     /// 用户问题描述
     pub user_description: Option<String>,
+    /// 反馈截图的 COS key 列表（DB 内以 JSON 文本存储；无截图为 None）
+    pub screenshot_keys: Option<Vec<String>>,
     /// 上报时间（ISO 8601）
     pub report_time: String,
     /// 日志条目数

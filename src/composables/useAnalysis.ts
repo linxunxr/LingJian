@@ -100,6 +100,7 @@ export async function runAnalysis(input: string): Promise<void> {
             platform: issueInfo.platform,
             realm: issueInfo.realm,
             userDescription: issueInfo.userDescription,
+            screenshotKeys: issueInfo.screenshotKeys,
             playTime: issueInfo.playTime != null ? Number(issueInfo.playTime) : undefined,
           }
         : null,

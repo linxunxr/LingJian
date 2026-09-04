@@ -105,6 +105,7 @@ pub fn run() {
             issue::act_on_issue,
             issue::is_report_id_input,
             download::download_log,
+            download::fetch_screenshot,
             import::import_log_file,
             analyze::analyze_log,
             reports::list_recent_reports,

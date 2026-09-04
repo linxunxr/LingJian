@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use base64::Engine as _;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_handler, tool_router, ErrorData, Json, ServerHandler};
 use tauri::Manager;
@@ -17,8 +18,8 @@ use crate::services::downloader;
 
 use super::dto::{
     AddCommentParams, AnalysisResultDto, AnalyzeReportParams, CloseIssueParams, ErrorAggregateDto,
-    GetReportParams, IssueActionResultDto, IssueBriefDto, IssueListResult, LevelCountsDto,
-    ListIssuesParams, LogEntryDto, LogFilterDto, QueryLogsParams, QueryLogsResult,
+    GetReportParams, GetScreenshotsParams, IssueActionResultDto, IssueBriefDto, IssueListResult,
+    LevelCountsDto, ListIssuesParams, LogEntryDto, LogFilterDto, QueryLogsParams, QueryLogsResult,
     RemoteIssueDto, ReopenIssueParams, SyncLatestParams, SyncResultDto, TagCountDto,
     TimelinePointDto, UpdateLabelsParams,
 };
@@ -271,6 +272,75 @@ impl LingjianServer {
         }
     }
 
+    /// 读取上报反馈的截图，以 MCP ImageContent（base64 PNG）返回。
+    ///
+    /// 返回 CallToolResult 而非 Json：内容是「说明文本 + 图片块」混合列表，
+    /// 仅多模态模型客户端能查看图片本体，纯文本模型只能读到说明文字。
+    #[tool(
+        name = "get_report_screenshots",
+        description = "读取用户反馈附带的上报截图（PNG 图片内容，需多模态模型查看）。本地缓存优先，缺失时经 SCF 下载；截图总数与 key 见 get_report 的 screenshotKeys",
+        annotations(read_only_hint = true)
+    )]
+    async fn get_report_screenshots(
+        &self,
+        Parameters(GetScreenshotsParams {
+            report_id,
+            offset,
+            limit,
+        }): Parameters<GetScreenshotsParams>,
+    ) -> Result<rmcp::model::CallToolResult, ErrorData> {
+        let report = self
+            .query_report(report_id)
+            .await?
+            .ok_or_else(|| {
+                ErrorData::invalid_params("未找到该 reportId 的上报记录".to_string(), None)
+            })?;
+        let keys = report.screenshot_keys.clone().unwrap_or_default();
+        if keys.is_empty() {
+            return Ok(rmcp::model::CallToolResult::success(vec![
+                rmcp::model::ContentBlock::text(format!(
+                    "上报 {} 没有截图附件（老上报或用户未附带）",
+                    report.report_id
+                )),
+            ]));
+        }
+
+        let offset = offset.unwrap_or(0).min(keys.len());
+        let limit = limit.unwrap_or(2).clamp(1, 4);
+        let selected: Vec<&String> = keys.iter().skip(offset).take(limit).collect();
+        let mut contents = vec![rmcp::model::ContentBlock::text(format!(
+            "上报 {} 共 {} 张截图，以下为第 {}–{} 张（offset={}，后续可用 offset 翻页）：",
+            report.report_id,
+            keys.len(),
+            offset + 1,
+            offset + selected.len(),
+            offset,
+        ))];
+
+        let (scf_url, api_key) = self.scf_config()?;
+        let app_state = self.app.state::<crate::AppState>();
+        let client = app_state.client.clone();
+        let cache_dir = app_state.cache_dir.clone();
+
+        for key in selected {
+            match downloader::fetch_screenshot_bytes(&scf_url, key, &api_key, &client, &cache_dir)
+                .await
+            {
+                Ok((bytes, _cached)) => {
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                    contents.push(rmcp::model::ContentBlock::Image(
+                        rmcp::model::ImageContent::new(b64, "image/png"),
+                    ));
+                }
+                // 单张失败降级为文本说明，不影响其余截图
+                Err(e) => contents.push(rmcp::model::ContentBlock::text(format!(
+                    "截图 {key} 拉取失败: {e}"
+                ))),
+            }
+        }
+        Ok(rmcp::model::CallToolResult::success(contents))
+    }
+
     #[tool(
         name = "analyze_report",
         description = "分析一份上报日志：级别统计、tag 分布、错误聚合（全量）+ WARN/ERROR 时间线与明细（默认截断，可用 query_logs 翻页）。结果与灵鉴分析页同源",
@@ -428,6 +498,7 @@ impl LingjianServer {
                             .and_then(|i| i.play_time.as_deref())
                             .and_then(|s| s.parse::<u64>().ok()),
                         user_description: info.as_ref().and_then(|i| i.user_description.clone()),
+                        screenshot_keys: info.as_ref().and_then(|i| i.screenshot_keys.clone()),
                         report_time: now.clone(),
                         log_count: entries.len(),
                         downloaded_at: now,

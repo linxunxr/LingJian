@@ -35,6 +35,8 @@ pub struct IssueBriefDto {
     pub play_time: Option<u64>,
     /// 用户原始反馈描述
     pub user_description: Option<String>,
+    /// 反馈截图的 COS key 列表（无截图为 None；图像本体需经灵鉴界面查看）
+    pub screenshot_keys: Option<Vec<String>>,
     pub log_count: usize,
     pub report_time: String,
     pub downloaded_at: String,
@@ -52,6 +54,7 @@ impl From<Report> for IssueBriefDto {
             realm: r.realm,
             play_time: r.play_time,
             user_description: r.user_description,
+            screenshot_keys: r.screenshot_keys,
             log_count: r.log_count,
             report_time: r.report_time,
             downloaded_at: r.downloaded_at,
@@ -64,6 +67,20 @@ impl From<Report> for IssueBriefDto {
 #[serde(rename_all = "camelCase")]
 pub struct IssueListResult {
     pub issues: Vec<IssueBriefDto>,
+}
+
+/// get_report_screenshots 入参
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GetScreenshotsParams {
+    /// 上报编号（reportId）
+    pub report_id: String,
+    /// 起始序号（0 基，默认 0；配合 limit 查看后续截图）
+    #[serde(default)]
+    pub offset: Option<usize>,
+    /// 最多返回几张（1-4，默认 2；图片 token 开销大，逐批查看更省）
+    #[serde(default)]
+    pub limit: Option<usize>,
 }
 
 /// get_report 入参

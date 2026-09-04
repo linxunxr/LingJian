@@ -55,6 +55,9 @@ pub struct IssueInfo {
     /// 玩家昵称（Steam personaName，仅展示；老 Issue 无此字段）
     #[serde(default)]
     pub player_name: Option<String>,
+    /// 反馈截图的 COS key 列表（SCF 从 Issue body「截图附件」小节提取；无截图/旧版 SCF 不返回）
+    #[serde(default)]
+    pub screenshot_keys: Option<Vec<String>>,
 }
 
 /// Issue 列表项（SCF `/issues` 端点返回）

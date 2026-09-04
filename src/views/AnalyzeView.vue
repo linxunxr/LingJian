@@ -124,6 +124,8 @@ const reportMeta = computed<ReportMeta | null>(() => {
       realm: info.realm ?? null,
       playTime: info.playTime != null ? Number(info.playTime) : null,
       reportTime: null,
+      // state.issue 经 readonly() 代理，数组需拷贝脱离只读类型
+      screenshotKeys: info.screenshotKeys ? [...info.screenshotKeys] : null,
     }
   }
   const r = standaloneReport.value
@@ -137,8 +139,48 @@ const reportMeta = computed<ReportMeta | null>(() => {
     realm: r.realm ?? null,
     playTime: r.playTime ?? null,
     reportTime: r.reportTime,
+    screenshotKeys: r.screenshotKeys ?? null,
   }
 })
+
+/** 反馈截图（data URL 列表，按 screenshotKeys 顺序） */
+const screenshotUrls = ref<string[]>([])
+
+/** 截图拉取序号：连续切换 report 时丢弃旧异步循环的过期结果 */
+let screenshotSeq = 0
+
+/** 按需拉取反馈截图：本地缓存命中不发网络请求，单张失败跳过该张 */
+async function loadScreenshots(keys: string[]) {
+  const seq = ++screenshotSeq
+  screenshotUrls.value = []
+  if (!keys.length) return
+  // 配置不完整时静默跳过（与 loadIssueInfo 一致的降级策略）
+  if (!settings.scfUrl.trim() || !settings.apiKey.trim()) return
+
+  const results: string[] = []
+  for (const key of keys) {
+    if (seq !== screenshotSeq) return
+    try {
+      const shot = await invoke<{ key: string; dataUrl: string; cached: boolean }>(
+        'fetch_screenshot',
+        { key, scfUrl: settings.scfUrl, apiKey: settings.apiKey },
+      )
+      results.push(shot.dataUrl)
+    } catch (e) {
+      // 单张失败不阻断其余（常见于 SCF 端点未更新到截图版本）
+      console.warn('[loadScreenshots] 拉取失败:', key, e)
+    }
+  }
+  if (seq === screenshotSeq) screenshotUrls.value = results
+}
+
+watch(
+  () => reportMeta.value?.screenshotKeys,
+  (keys) => {
+    if (keys && keys.length) loadScreenshots(keys)
+    else screenshotUrls.value = []
+  },
+)
 
 /** 详情面板空态概览（当前匹配条数 / 总量 / 首末时间） */
 const entrySummary = computed(() => {
@@ -294,8 +336,8 @@ onUnmounted(() => {
     <p v-if="standaloneError" class="error-msg">{{ standaloneError }}</p>
     <p v-else-if="state.error" class="error-msg">{{ state.error }}</p>
 
-    <!-- 上报上下文：用户反馈 + 环境信息（Issue 流程或本地导入的落库记录） -->
-    <ReportMetaCard :meta="reportMeta" />
+    <!-- 上报上下文：用户反馈 + 截图 + 环境信息（Issue 流程或本地导入的落库记录） -->
+    <ReportMetaCard :meta="reportMeta" :screenshots="screenshotUrls" />
 
     <div v-if="loadingStandalone" class="loading">加载中...</div>
 
