@@ -1,8 +1,9 @@
 # 手动触发的 Gitee 附件补传工作流。
 # 背景：v0.4.2 发布时 CI runner → Gitee 链路异常，附件上传步骤因 fetch 无超时
 # 挂死（已修复：脚本补 30s 超时）；latest.json 已同步成功、发行版已建，仅缺附件。
-# 本工作流复用 sync-to-gitee 的逻辑（脚本幂等：发行版复用、已有附件跳过），
-# 按 tag 参数补传。附件补齐后本文件保留，作为发布事故的标准补数手段。
+# v0.5.1 事故后发布链路改为「先降级后升级」（见 release.yml sync-to-gitee 注释）：
+# 附件未齐时 Gitee 清单停在 GitHub-URL 保底态；本工作流补传附件，齐后自动
+# 把清单升级回 Gitee-URL（国内源恢复）。脚本幂等，可反复重跑。
 name: Resync Gitee
 
 on:
@@ -16,6 +17,8 @@ on:
 jobs:
   resync:
     runs-on: ubuntu-22.04
+    # 挂死兜底（与 release.yml sync-to-gitee 一致）；被杀时清单保持 GitHub 源
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -41,4 +44,15 @@ jobs:
           GITEE_OWNER: mwcxlinxun
           GITEE_REPO: ling-jian
         run: |
-          node scripts/sync-release-to-gitee.mjs dist "${{ inputs.tag }}"
+          node scripts/sync-release-to-gitee.mjs dist "${{ inputs.tag }}" || true
+          if node scripts/verify-gitee-assets.mjs "${{ inputs.tag }}" dist; then
+            # 附件补齐：重建双清单并升级为 Gitee-URL（dist 里只有 Release assets
+            # 的 latest.json，latest.gitee.json 需重新生成）。
+            # 注意：清单 GitHub-URL 基于 releases/latest/download，假定补传的
+            # tag 是当前最新 release（补历史 tag 时该 URL 会指错，属已知限制）
+            node scripts/generate-latest-json.mjs dist "${{ inputs.tag }}"
+            node scripts/sync-latest-to-gitee.mjs dist/latest.gitee.json && \
+              echo '✓ 附件齐全，清单已升级为 Gitee 源（国内下载恢复）'
+          else
+            echo '⚠ 附件仍未齐，清单保持 GitHub 源（可稍后重跑本工作流）'
+          fi

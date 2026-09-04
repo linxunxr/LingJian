@@ -116,13 +116,22 @@ jobs:
 
   # 同步发行版与更新清单到 Gitee（国内镜像 + updater 第二端点）
   #   - 发行版：tag + changelog + 安装包附件（API 创建 + attach_files 上传）
-  #   - 更新清单：latest.gitee.json 提交到仓库根作 latest.json
-  #     （Gitee 无 latest/download 固定地址，客户端经仓库 raw 地址拉取）
+  #   - 更新清单：先降级后升级——
+  #     1. 先提交 GitHub-URL 清单（latest.github.json）：此刻附件必然未传，
+  #        此后任何故障（附件挂死/部分失败/job 超时被杀）都停在这个保底态，
+  #        updater 下载走 GitHub 永远可更新（v0.5.1 事故：Gitee-URL 清单指向
+  #        缺失附件，updater 下载 404 且不回退端点）
+  #     2. 传附件（幂等，单文件失败不阻断）
+  #     3. verify-gitee-assets 确认齐全才升级为 Gitee-URL 清单（国内源生效）；
+  #        不齐则保持 GitHub 源，链路恢复后 resync-gitee 补传并自动升级
   # Gitee 仓库代码由其自带的 GitHub 镜像同步跟进，本 job 只补发行版与清单。
-  # 令牌未配置（GITEE_TOKEN 缺失）时两个脚本均自动跳过，不阻断发布。
+  # 令牌未配置（GITEE_TOKEN 缺失）时各脚本均自动跳过，不阻断发布。
   sync-to-gitee:
     needs: publish
     runs-on: ubuntu-22.04
+    # 挂死兜底：正常同步约 13 分钟（v0.4.0 实测），超时被杀时清单已停在
+    # GitHub-URL 保底态（步骤 1 先行），不再依赖 job 级 6 小时默认超时
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -151,7 +160,16 @@ jobs:
           GITEE_OWNER: mwcxlinxun
           GITEE_REPO: ling-jian
         run: |
-          # 清单提交失败不阻断（可在 Gitee 网页补更），发行版同步内部已做容错
-          node scripts/sync-latest-to-gitee.mjs dist/latest.gitee.json || \
-            echo '⚠ Gitee 清单提交失败（不阻断）'
-          node scripts/sync-release-to-gitee.mjs dist "${{ github.ref_name }}"
+          # 1. 保底：先提交 GitHub-URL 清单（失败仅告警——Gitee 端点将 404，
+          #    updater 拉清单阶段会回退 GitHub 端点，仍可更新）
+          node scripts/sync-latest-to-gitee.mjs dist/latest.github.json || \
+            echo '⚠ 降级清单提交失败（updater 将回退 GitHub 端点）'
+          # 2. 传附件（脚本内部对网络/平台错误均告警不阻断）
+          node scripts/sync-release-to-gitee.mjs dist "${{ github.ref_name }}" || true
+          # 3. 齐全才升级为 Gitee-URL 清单
+          if node scripts/verify-gitee-assets.mjs "${{ github.ref_name }}" dist; then
+            node scripts/sync-latest-to-gitee.mjs dist/latest.gitee.json && \
+              echo '✓ 附件齐全，清单已升级为 Gitee 源（国内下载生效）'
+          else
+            echo '⚠ 附件未齐，清单保持 GitHub 源（链路恢复后 resync-gitee 补传自动升级）'
+          fi
