@@ -59,6 +59,10 @@ onMounted(() => {
 
     <p v-if="exportedPath" class="exported-tip">已导出到：{{ exportedPath }}</p>
     <p v-if="state.error" class="error">{{ state.error }}</p>
+    <!-- 回源失败降级用缓存聚合：数据可能不完整，明确提示避免误读排名 -->
+    <p v-else-if="state.degradedError" class="error">
+      拉取最新数据失败（{{ state.degradedError }}），以下为本地缓存聚合，反馈数可能偏少——请稍后点「刷新」重试
+    </p>
 
     <div v-if="!settingsReady" class="empty">
       未配置 SCF 端点，请先到<RouterLink :to="{ name: 'settings' }" class="empty-link">设置页</RouterLink>填写后再查看排行榜。
