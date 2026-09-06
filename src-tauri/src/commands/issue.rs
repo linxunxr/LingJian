@@ -43,17 +43,20 @@ const MAX_SYNC_PAGES: u32 = 5;
 /// 每页条数与 SCF 端点保持一致（github.js PER_PAGE=30）
 const PER_PAGE: u32 = 30;
 
-/// 拉取远端列表并全部落库（逐页同步，上限 MAX_SYNC_PAGES 页）
+/// 拉取远端列表并全部落库（逐页同步，上限 MAX_SYNC_PAGES 页）。
+///
+/// state 固定拉 "all"：缓存是全量镜像，open/closed 筛选在查询侧做——
+/// 若按请求的 state 分家同步（首页 open 同步、排行页 all 同步），
+/// closed 的 Issue 可能从未落库，排行页聚合时"已解决反馈消失"。
 async fn sync_issues_to_cache(
     scf_url: &str,
-    state: &str,
     api_key: &str,
     http: &reqwest::Client,
     cache: &Arc<Cache>,
 ) -> Result<(), String> {
     let mut page = 1u32;
     loop {
-        let list = downloader::list_issues(scf_url, state, page, api_key, http).await?;
+        let list = downloader::list_issues(scf_url, "all", page, api_key, http).await?;
         let empty = list.issues.is_empty();
         let has_more = list.has_more;
         let items: Vec<github::IssueListItem> = list.issues;
@@ -133,7 +136,7 @@ pub async fn list_issues(
 
     // 强刷：同步回源 + 落库 + 返回远端数据；失败降级返回缓存
     if force_refresh {
-        if let Err(e) = sync_issues_to_cache(&scf_url, st, &api_key, &http.client, &cache).await {
+        if let Err(e) = sync_issues_to_cache(&scf_url, &api_key, &http.client, &cache).await {
             // 回源失败降级读缓存；缓存也为空时才把错误抛给前端
             let (items, has_more, cached_at) = read_cache(1).await?;
             if items.is_empty() {
@@ -150,17 +153,28 @@ pub async fn list_issues(
         return downloader::list_issues(&scf_url, st, 1, &api_key, &http.client).await;
     }
 
-    // 默认：读缓存立即返回 + 后台静默回源（fire-and-forget，失败仅记日志）
+    // 默认：读缓存立即返回；缓存为空（首次使用）则同步回源一次再读，
+    // 否则排行榜这类全量消费者会聚合出空结果
     let (items, has_more, cached_at) = read_cache(1).await?;
-    let has_cache = !items.is_empty();
+    if items.is_empty() {
+        sync_issues_to_cache(&scf_url, &api_key, &http.client, &cache).await?;
+        let (items, has_more, cached_at) = read_cache(pg).await?;
+        return Ok(crate::services::github::IssueList {
+            issues: items,
+            page: pg,
+            has_more,
+            from_cache: Some(true),
+            cached_at,
+        });
+    }
 
+    // 缓存已有：后台静默回源全量刷新（fire-and-forget，失败仅记日志）
     let bg_sc = scf_url.clone();
     let bg_key = api_key.clone();
     let bg_cache = cache.clone();
-    let bg_st = st.to_string();
     let bg_http = http.client.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = sync_issues_to_cache(&bg_sc, &bg_st, &bg_key, &bg_http, &bg_cache).await {
+        if let Err(e) = sync_issues_to_cache(&bg_sc, &bg_key, &bg_http, &bg_cache).await {
             log::debug!("后台刷新问题列表失败（缓存保持不变）: {e}");
         }
     });
@@ -169,7 +183,7 @@ pub async fn list_issues(
         issues: items,
         page: 1,
         has_more,
-        from_cache: Some(has_cache),
+        from_cache: Some(true),
         cached_at,
     })
 }
