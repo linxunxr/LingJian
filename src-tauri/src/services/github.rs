@@ -107,6 +107,10 @@ pub struct IssueList {
     /// 缓存最近一次回源时间（命令层填充；SCF 响应无此字段）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cached_at: Option<String>,
+    /// 回源失败降级返回缓存时的错误说明（数据可能不完整，前端应提示；
+    /// 命令层填充；SCF 响应无此字段）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub degraded_error: Option<String>,
 }
 
 /// SCF `/issue/:number/action` 端点的响应

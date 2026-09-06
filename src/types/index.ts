@@ -73,6 +73,8 @@ export interface IssueList {
   fromCache?: boolean
   /** 缓存最近一次回源时间（ISO 8601；仅 fromCache 时有意义） */
   cachedAt?: string
+  /** 回源失败降级返回缓存时的错误说明（数据可能不完整，应向用户提示） */
+  degradedError?: string
 }
 
 /** SCF /issue/:number/action 端点的响应 */

@@ -42,6 +42,8 @@ interface LeaderboardState {
   unidentified: number
   /** 数据对应的最晚上报时间（ISO 8601），导出与展示标注用 */
   loadedAt: string | null
+  /** 回源失败降级用缓存聚合时的错误说明（数据可能不完整，非 null 时页面提示） */
+  degradedError: string | null
 }
 
 const state = reactive<LeaderboardState>({
@@ -51,6 +53,7 @@ const state = reactive<LeaderboardState>({
   totalIssues: 0,
   unidentified: 0,
   loadedAt: null,
+  degradedError: null,
 })
 
 /** 拉全量分页上限（30 条/页 × 50 页 = 1500 条），防御 SCF hasMore 异常导致的死循环 */
@@ -61,6 +64,7 @@ const MAX_PAGES = 50
  *  open 状态的旧数据（v0.5.2 的缓存按请求状态分家同步的遗留）；后续页读本地库。 */
 async function fetchAllIssues(): Promise<IssueListItem[]> {
   const all: IssueListItem[] = []
+  let degraded: string | null = null
   for (let page = 1; page <= MAX_PAGES; page++) {
     const result = await invoke<IssueList>('list_issues', {
       state: 'all',
@@ -70,8 +74,11 @@ async function fetchAllIssues(): Promise<IssueListItem[]> {
       apiKey: settings.apiKey,
     })
     if (Array.isArray(result.issues)) all.push(...result.issues)
+    // 回源失败降级缓存时记录错误，聚合结束后统一提示（数据可能不完整）
+    if (result.degradedError) degraded = result.degradedError
     if (!result.hasMore) break
   }
+  state.degradedError = degraded
   return all
 }
 

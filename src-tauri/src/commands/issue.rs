@@ -43,6 +43,27 @@ const MAX_SYNC_PAGES: u32 = 5;
 /// 每页条数与 SCF 端点保持一致（github.js PER_PAGE=30）
 const PER_PAGE: u32 = 30;
 
+/// 拉取一页远端列表，对 SCF 冷启动超时（腾讯云 3 秒限制，闲置后实例回收，
+/// 首次请求必然超时并触发预热，重试即成功）做一次自动重试
+async fn fetch_page_with_warmup(
+    scf_url: &str,
+    state: &str,
+    page: u32,
+    api_key: &str,
+    http: &reqwest::Client,
+) -> Result<github::IssueList, String> {
+    match downloader::list_issues(scf_url, state, page, api_key, http).await {
+        Ok(list) => Ok(list),
+        Err(first) => {
+            // 等待 SCF 预热完成再重试一次；再失败则返回原始错误
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            downloader::list_issues(scf_url, state, page, api_key, http)
+                .await
+                .map_err(|_| first)
+        }
+    }
+}
+
 /// 拉取远端列表并全部落库（逐页同步，上限 MAX_SYNC_PAGES 页）。
 ///
 /// state 固定拉 "all"：缓存是全量镜像，open/closed 筛选在查询侧做——
@@ -56,7 +77,7 @@ async fn sync_issues_to_cache(
 ) -> Result<(), String> {
     let mut page = 1u32;
     loop {
-        let list = downloader::list_issues(scf_url, "all", page, api_key, http).await?;
+        let list = fetch_page_with_warmup(scf_url, "all", page, api_key, http).await?;
         let empty = list.issues.is_empty();
         let has_more = list.has_more;
         let items: Vec<github::IssueListItem> = list.issues;
@@ -130,11 +151,12 @@ pub async fn list_issues(
             page: pg,
             has_more,
             from_cache: Some(true),
+            degraded_error: None,
             cached_at,
         });
     }
 
-    // 强刷：同步回源 + 落库 + 返回远端数据；失败降级返回缓存
+    // 强刷：同步回源 + 落库 + 返回远端数据；失败降级返回缓存并携带错误说明
     if force_refresh {
         if let Err(e) = sync_issues_to_cache(&scf_url, &api_key, &http.client, &cache).await {
             // 回源失败降级读缓存；缓存也为空时才把错误抛给前端
@@ -146,11 +168,14 @@ pub async fn list_issues(
                 issues: items,
                 page: 1,
                 has_more,
+                // 强刷失败对调用方是事实错误（排行榜会拿残缺数据聚合），
+                // 不能伪装成正常缓存命中；错误文本随响应带回由前端提示
                 from_cache: Some(true),
+                degraded_error: Some(e),
                 cached_at,
             });
         }
-        return downloader::list_issues(&scf_url, st, 1, &api_key, &http.client).await;
+        return fetch_page_with_warmup(&scf_url, st, 1, &api_key, &http.client).await;
     }
 
     // 默认：读缓存立即返回；缓存为空（首次使用）则同步回源一次再读，
@@ -164,6 +189,7 @@ pub async fn list_issues(
             page: pg,
             has_more,
             from_cache: Some(true),
+            degraded_error: None,
             cached_at,
         });
     }
@@ -184,6 +210,7 @@ pub async fn list_issues(
         page: 1,
         has_more,
         from_cache: Some(true),
+        degraded_error: None,
         cached_at,
     })
 }
