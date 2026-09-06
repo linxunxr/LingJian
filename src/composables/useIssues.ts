@@ -27,6 +27,10 @@ interface IssuesState {
   actingNumber: number | null
   /** 操作错误（独立于列表加载错误，便于菜单内提示） */
   actionError: string | null
+  /** 当前列表是否来自本地缓存（后台回源在下次打开时生效） */
+  fromCache: boolean
+  /** 缓存最近一次回源时间（ISO 8601；展示"更新于 X 前"用） */
+  cachedAt: string | null
 }
 
 const state = reactive<IssuesState>({
@@ -40,6 +44,8 @@ const state = reactive<IssuesState>({
   loaded: false,
   actingNumber: null,
   actionError: null,
+  fromCache: false,
+  cachedAt: null,
 })
 
 /** 重置列表到初始状态（切换 tab / 手动刷新时用） */
@@ -53,12 +59,16 @@ function resetList() {
 /**
  * 拉取第一页（或重新拉取）。
  * 配置不完整时静默跳过，不报错（首页会显示配置提示）。
+ *
+ * 默认缓存优先（本地库秒开 + 后台静默回源）；refresh=true 强制回源
+ * （手动刷新/切 tab），回源失败降级返回缓存。
  */
-export async function loadIssues(): Promise<void> {
+export async function loadIssues(opts?: { refresh?: boolean }): Promise<void> {
   // 配置不完整：静默跳过（首页已有配置提示横幅）
   if (!settings.scfUrl.trim() || !settings.apiKey.trim()) {
     return
   }
+  const refresh = opts?.refresh ?? false
 
   resetList()
   state.loading = true
@@ -68,6 +78,7 @@ export async function loadIssues(): Promise<void> {
     const result = await invoke<IssueList>('list_issues', {
       state: state.state,
       page: 1,
+      refresh,
       scfUrl: settings.scfUrl,
       apiKey: settings.apiKey,
     })
@@ -75,6 +86,8 @@ export async function loadIssues(): Promise<void> {
     state.issues = Array.isArray(result.issues) ? result.issues : []
     state.page = result.page ?? 1
     state.hasMore = !!result.hasMore
+    state.fromCache = !!result.fromCache
+    state.cachedAt = result.cachedAt ?? null
     state.loaded = true
   } catch (e) {
     state.error = typeof e === 'string' ? e : String(e)
@@ -83,14 +96,14 @@ export async function loadIssues(): Promise<void> {
   }
 }
 
-/** 切换状态 tab（未处理 / 全部），切换后重新从第 1 页拉 */
+/** 切换状态 tab（未处理 / 全部），切换后强制回源重拉 */
 export async function switchState(s: IssueState): Promise<void> {
   if (s === state.state) return
   state.state = s
-  await loadIssues()
+  await loadIssues({ refresh: true })
 }
 
-/** 加载下一页（追加到列表末尾） */
+/** 加载下一页（追加到列表末尾；翻页读本地库，不打网络） */
 export async function loadMore(): Promise<void> {
   if (!state.hasMore || state.loadingMore) return
 
@@ -115,9 +128,7 @@ export async function loadMore(): Promise<void> {
   } finally {
     state.loadingMore = false
   }
-}
-
-/**
+}/**
  * 对指定 Issue 执行操作（关闭/重开/评论/标签）。
  *
  * 成功后**乐观更新**本地列表对应项的 state/labels，不重拉整个列表。

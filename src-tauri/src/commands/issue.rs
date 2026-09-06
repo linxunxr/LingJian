@@ -1,7 +1,8 @@
 use serde::Serialize;
 use tauri::State;
 
-use crate::services::{downloader, github};
+use crate::services::{cache::Cache, downloader, github};
+use std::sync::Arc;
 
 /// URL/编号解析结果
 #[derive(Debug, Serialize)]
@@ -37,14 +38,51 @@ pub async fn fetch_issue_info(
     downloader::resolve_issue(&scf_url, number, &api_key, &http.client).await
 }
 
+/// 单次回源最多同步的远端页数（翻页走本地库，不该靠网络兜底）
+const MAX_SYNC_PAGES: u32 = 5;
+/// 每页条数与 SCF 端点保持一致（github.js PER_PAGE=30）
+const PER_PAGE: u32 = 30;
+
+/// 拉取远端列表并全部落库（逐页同步，上限 MAX_SYNC_PAGES 页）
+async fn sync_issues_to_cache(
+    scf_url: &str,
+    state: &str,
+    api_key: &str,
+    http: &reqwest::Client,
+    cache: &Arc<Cache>,
+) -> Result<(), String> {
+    let mut page = 1u32;
+    loop {
+        let list = downloader::list_issues(scf_url, state, page, api_key, http).await?;
+        let empty = list.issues.is_empty();
+        let has_more = list.has_more;
+        let items: Vec<github::IssueListItem> = list.issues;
+        // DB 调用走阻塞线程，避免卡住异步运行时
+        let c2 = cache.clone();
+        tauri::async_runtime::spawn_blocking(move || c2.upsert_issues(&items))
+            .await
+            .map_err(|e| format!("落库任务失败: {e}"))??;
+        if !has_more || empty || page >= MAX_SYNC_PAGES {
+            return Ok(());
+        }
+        page += 1;
+    }
+}
+
 /// 通过 SCF 端点拉取上报问题列表（首页问题列表用）
 ///
-/// - `state`：状态筛选，可选 "open" / "all"，默认 "open"
+/// 缓存优先：refresh=false 时先读本地 issue_list 缓存并立即返回，
+/// 同时后台静默回源 SCF 刷新缓存（下次打开即最新）；refresh=true 同步回源，
+/// 失败时降级返回缓存。翻页（page>1）直接读本地库，不打网络。
+///
+/// - `state`：状态筛选，可选 "open" / "closed" / "all"，默认 "open"
 /// - `page`：页码，默认 1
+/// - `refresh`：true 强制回源（手动刷新按钮/切 tab）
 #[tauri::command]
 pub async fn list_issues(
     state: Option<String>,
     page: Option<u32>,
+    refresh: Option<bool>,
     scf_url: String,
     api_key: String,
     http: State<'_, crate::AppState>,
@@ -59,14 +97,88 @@ pub async fn list_issues(
         _ => "open",
     };
     let pg = page.unwrap_or(1).max(1);
-    downloader::list_issues(&scf_url, st, pg, &api_key, &http.client).await
+    let force_refresh = refresh.unwrap_or(false);
+
+    let cache: Arc<Cache> = http.cache.clone();
+    // 读本地缓存分页（spawn_blocking 包裹 DB 调用）
+    let read_cache = {
+        let st = st.to_string();
+        let cache = cache.clone();
+        move |page: u32| {
+            let cache = cache.clone();
+            let st = st.clone();
+            async move {
+                tauri::async_runtime::spawn_blocking(move || {
+                    let (items, has_more) = cache.list_issues(&st, page, PER_PAGE)?;
+                    let cached_at = cache.issues_cached_at()?;
+                    Ok::<_, String>((items, has_more, cached_at))
+                })
+                .await
+                .map_err(|e| format!("查询任务失败: {e}"))?
+            }
+        }
+    };
+
+    // 翻页：只读本地库（后台回源已把各页拉全），不打网络
+    if pg > 1 && !force_refresh {
+        let (items, has_more, cached_at) = read_cache(pg).await?;
+        return Ok(crate::services::github::IssueList {
+            issues: items,
+            page: pg,
+            has_more,
+            from_cache: Some(true),
+            cached_at,
+        });
+    }
+
+    // 强刷：同步回源 + 落库 + 返回远端数据；失败降级返回缓存
+    if force_refresh {
+        if let Err(e) = sync_issues_to_cache(&scf_url, st, &api_key, &http.client, &cache).await {
+            // 回源失败降级读缓存；缓存也为空时才把错误抛给前端
+            let (items, has_more, cached_at) = read_cache(1).await?;
+            if items.is_empty() {
+                return Err(e);
+            }
+            return Ok(crate::services::github::IssueList {
+                issues: items,
+                page: 1,
+                has_more,
+                from_cache: Some(true),
+                cached_at,
+            });
+        }
+        return downloader::list_issues(&scf_url, st, 1, &api_key, &http.client).await;
+    }
+
+    // 默认：读缓存立即返回 + 后台静默回源（fire-and-forget，失败仅记日志）
+    let (items, has_more, cached_at) = read_cache(1).await?;
+    let has_cache = !items.is_empty();
+
+    let bg_sc = scf_url.clone();
+    let bg_key = api_key.clone();
+    let bg_cache = cache.clone();
+    let bg_st = st.to_string();
+    let bg_http = http.client.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = sync_issues_to_cache(&bg_sc, &bg_st, &bg_key, &bg_http, &bg_cache).await {
+            log::debug!("后台刷新问题列表失败（缓存保持不变）: {e}");
+        }
+    });
+
+    Ok(crate::services::github::IssueList {
+        issues: items,
+        page: 1,
+        has_more,
+        from_cache: Some(has_cache),
+        cached_at,
+    })
 }
 
 /// 通过 SCF 端点操作 Issue（关闭/重开/评论/标签）
 ///
 /// - `action`：close / reopen / comment / setLabels
 /// - `body`：评论内容（action=comment 时必填）
-/// - `labels`：标签数组（action=setLabels 时必填，整体替换）
+/// - `labels`：标签数组（action=setLabels 时，整体替换）
 #[tauri::command]
 pub async fn act_on_issue(
     number: u32,
@@ -80,7 +192,7 @@ pub async fn act_on_issue(
     if scf_url.trim().is_empty() || api_key.trim().is_empty() {
         return Err("未配置 SCF 端点，请先到设置页填写".to_string());
     }
-    downloader::act_on_issue(
+    let result = downloader::act_on_issue(
         &scf_url,
         number,
         &action,
@@ -89,7 +201,27 @@ pub async fn act_on_issue(
         &api_key,
         &http.client,
     )
-    .await
+    .await?;
+
+    // state/labels 有变化时同步刷新本地缓存，避免下次从缓存读到旧状态
+    let new_state = result.state.clone();
+    let new_labels = result.labels.clone();
+    if new_state.is_some() || new_labels.is_some() {
+        let cache = http.cache.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            if let Err(e) = cache.patch_issue_state(
+                number,
+                new_state.as_deref(),
+                new_labels.as_deref(),
+            ) {
+                log::debug!("同步 Issue #{number} 状态到本地缓存失败: {e}");
+            }
+        })
+        .await
+        .map_err(|e| format!("缓存同步任务失败: {e}"))?;
+    }
+
+    Ok(result)
 }
 
 /// 判断输入是否为纯 reportId（供前端决定是否跳过 Issue 解析）

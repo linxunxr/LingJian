@@ -5,6 +5,7 @@ use rusqlite::{params, Connection};
 
 use crate::models::log_entry::{LogEntry, LogLevel};
 use crate::models::report::Report;
+use crate::services::github::IssueListItem;
 
 /// SQLite 缓存，持有连接（内部可变，跨线程共享）
 pub struct Cache {
@@ -23,6 +24,10 @@ impl Cache {
         let sql = include_str!("../../migrations/001_init.sql");
         conn.execute_batch(sql)
             .map_err(|e| format!("初始化数据库失败: {e}"))?;
+
+        let issue_list_sql = include_str!("../../migrations/002_issue_list.sql");
+        conn.execute_batch(issue_list_sql)
+            .map_err(|e| format!("初始化 issue_list 失败: {e}"))?;
 
         // 增量迁移：CREATE TABLE IF NOT EXISTS 对旧库不生效，补列需显式 ALTER。
         // 幂等设计：列已存在时报错可忽略，逐条独立执行互不影响。
@@ -202,6 +207,139 @@ impl Cache {
             Some(r) => Ok(Some(r.map_err(|e| format!("读取行失败: {e}"))?)),
         }
     }
+
+    /// 批量 upsert Issue 列表缓存（fetched_at 记为本次写入时刻）
+    pub fn upsert_issues(&self, items: &[IssueListItem]) -> Result<(), String> {
+        let fetched_at = chrono::Utc::now().to_rfc3339();
+        let mut conn = self.conn.lock().map_err(|e| format!("数据库锁失败: {e}"))?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("开启事务失败: {e}"))?;
+
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT OR REPLACE INTO issue_list
+                        (issue_number, report_id, issue_title, state, labels, issue_url,
+                         created_at, app_version, platform, realm, player_id, player_name, fetched_at)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                )
+                .map_err(|e| format!("预编译失败: {e}"))?;
+
+            for item in items {
+                // 标签列表以 JSON 文本落库（SQLite 无数组类型）
+                let labels_json = item
+                    .labels
+                    .as_ref()
+                    .map(|l| serde_json::to_string(l))
+                    .transpose()
+                    .map_err(|e| format!("序列化标签失败: {e}"))?;
+                stmt.execute(params![
+                    item.number as i64,
+                    item.report_id,
+                    item.title,
+                    item.state,
+                    labels_json,
+                    item.issue_url,
+                    item.created_at,
+                    item.app_version,
+                    item.platform,
+                    item.realm,
+                    item.player_id,
+                    item.player_name,
+                    fetched_at,
+                ])
+                .map_err(|e| format!("写入 issue_list 失败: {e}"))?;
+            }
+        }
+
+        tx.commit().map_err(|e| format!("提交事务失败: {e}"))?;
+        Ok(())
+    }
+
+    /// 按状态筛选分页读取 Issue 列表缓存（created_at 倒序，与远端排序一致）
+    ///
+    /// 返回 (列表项, 是否还有更多)。state ∈ open / closed / all。
+    pub fn list_issues(
+        &self,
+        state: &str,
+        page: u32,
+        per_page: u32,
+    ) -> Result<(Vec<IssueListItem>, bool), String> {
+        let conn = self.conn.lock().map_err(|e| format!("数据库锁失败: {e}"))?;
+        let page = page.max(1);
+        let per_page = per_page.max(1);
+        let offset = ((page - 1) * per_page) as i64;
+
+        // 多取一条判断 has_more，避免再发一次 COUNT 查询
+        let mut stmt = conn
+            .prepare(
+                "SELECT issue_number, report_id, issue_title, state, labels, issue_url,
+                        created_at, app_version, platform, realm, player_id, player_name
+                 FROM issue_list
+                 WHERE (?1 = 'all' OR state = ?1)
+                 ORDER BY created_at DESC
+                 LIMIT ?2 OFFSET ?3",
+            )
+            .map_err(|e| format!("查询预编译失败: {e}"))?;
+
+        let rows = stmt
+            .query_map(
+                params![state, per_page as i64 + 1, offset],
+                row_to_issue_list_item,
+            )
+            .map_err(|e| format!("查询失败: {e}"))?;
+
+        let mut items = Vec::new();
+        for r in rows {
+            items.push(r.map_err(|e| format!("读取行失败: {e}"))?);
+        }
+        let has_more = items.len() as u32 > per_page;
+        items.truncate(per_page as usize);
+        Ok((items, has_more))
+    }
+
+    /// 最近一次列表回源时间（全部 issue 中最大的 fetched_at）
+    pub fn issues_cached_at(&self) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("数据库锁失败: {e}"))?;
+        let cached_at: Option<String> = conn
+            .query_row("SELECT MAX(fetched_at) FROM issue_list", [], |row| {
+                row.get(0)
+            })
+            .map_err(|e| format!("查询失败: {e}"))?;
+        Ok(cached_at)
+    }
+
+    /// 局部刷新某条 Issue 缓存的 state/labels（操作 Issue 后同步，避免缓存读到旧状态）
+    pub fn patch_issue_state(
+        &self,
+        issue_number: u32,
+        state: Option<&str>,
+        labels: Option<&[String]>,
+    ) -> Result<(), String> {
+        let mut conn = self.conn.lock().map_err(|e| format!("数据库锁失败: {e}"))?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("开启事务失败: {e}"))?;
+        if let Some(new_state) = state {
+            tx.execute(
+                "UPDATE issue_list SET state = ? WHERE issue_number = ?",
+                params![new_state, issue_number as i64],
+            )
+            .map_err(|e| format!("更新 issue 状态失败: {e}"))?;
+        }
+        if let Some(new_labels) = labels {
+            let labels_json = serde_json::to_string(new_labels)
+                .map_err(|e| format!("序列化标签失败: {e}"))?;
+            tx.execute(
+                "UPDATE issue_list SET labels = ? WHERE issue_number = ?",
+                params![labels_json, issue_number as i64],
+            )
+            .map_err(|e| format!("更新 issue 标签失败: {e}"))?;
+        }
+        tx.commit().map_err(|e| format!("提交事务失败: {e}"))?;
+        Ok(())
+    }
 }
 
 /// rusqlite 行映射到 Report
@@ -226,6 +364,38 @@ fn row_to_report(row: &rusqlite::Row) -> rusqlite::Result<Report> {
         report_time: row.get(10)?,
         log_count: log_count_i as usize,
         downloaded_at: row.get(12)?,
+    })
+}
+
+/// rusqlite 行映射到 IssueListItem（owner/repo 从 issue_url 反推；标签 JSON 解析失败降级 None）
+fn row_to_issue_list_item(row: &rusqlite::Row) -> rusqlite::Result<IssueListItem> {
+    let labels = row
+        .get::<_, Option<String>>(4)?
+        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok());
+    let issue_url: String = row.get(5)?;
+    // owner/repo 列表展示用不到，从 URL 提取，取不到时留空
+    // URL 形如 https://github.com/{owner}/{repo}/issues/{n}
+    let segments: Vec<&str> = issue_url
+        .split("github.com/")
+        .nth(1)
+        .map_or(Vec::new(), |rest| rest.split('/').collect());
+    let owner = segments.first().copied().unwrap_or("").to_string();
+    let repo = segments.get(1).copied().unwrap_or("").to_string();
+    Ok(IssueListItem {
+        number: row.get::<_, i64>(0)? as u32,
+        report_id: row.get(1)?,
+        title: row.get(2).unwrap_or_default(),
+        state: row.get(3)?,
+        issue_url,
+        created_at: row.get(6)?,
+        owner,
+        repo,
+        app_version: row.get(7)?,
+        platform: row.get(8)?,
+        realm: row.get(9)?,
+        labels,
+        player_id: row.get(10)?,
+        player_name: row.get(11)?,
     })
 }
 
@@ -379,5 +549,121 @@ mod tests {
         let report = cache.get_report("r2").unwrap().unwrap();
         assert_eq!(report.user_description.as_deref(), Some("旧反馈"));
         assert_eq!(report.screenshot_keys, None); // 新列默认 NULL → None
+    }
+
+    /// issue_list upsert + 分页 + state 筛选
+    #[test]
+    fn issue_list_upsert_and_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("issues.db");
+        let cache = Cache::open(&db).unwrap();
+
+        // 空库：无缓存
+        assert!(cache.issues_cached_at().unwrap().is_none());
+        let (items, has_more) = cache.list_issues("open", 1, 30).unwrap();
+        assert!(items.is_empty() && !has_more);
+
+        let item = |n: u32, state: &str, created: &str, labels: Option<Vec<String>>| IssueListItem {
+            number: n,
+            report_id: format!("rid-{n}"),
+            title: format!("问题{n}"),
+            state: state.to_string(),
+            issue_url: format!("https://github.com/linxunxr/PathofIdleImmortals-bugs/issues/{n}"),
+            created_at: created.to_string(),
+            owner: "linxunxr".to_string(),
+            repo: "PathofIdleImmortals-bugs".to_string(),
+            app_version: Some("0.12.2".to_string()),
+            platform: Some("electron".to_string()),
+            realm: Some("凡人期".to_string()),
+            labels,
+            player_id: None,
+            player_name: None,
+        };
+
+        // 乱序写入，验证 created_at 倒序读出
+        cache
+            .upsert_issues(&[
+                item(1, "open", "2026-09-01T10:00:00Z", Some(vec!["已修复".into()])),
+                item(3, "closed", "2026-09-03T10:00:00Z", None),
+                item(2, "open", "2026-09-02T10:00:00Z", None),
+            ])
+            .unwrap();
+        assert!(cache.issues_cached_at().unwrap().is_some());
+
+        let (all, _) = cache.list_issues("all", 1, 30).unwrap();
+        let numbers: Vec<u32> = all.iter().map(|i| i.number).collect();
+        assert_eq!(numbers, vec![3, 2, 1]);
+
+        // open 筛选
+        let (open, _) = cache.list_issues("open", 1, 30).unwrap();
+        let numbers: Vec<u32> = open.iter().map(|i| i.number).collect();
+        assert_eq!(numbers, vec![2, 1]);
+        assert_eq!(open[1].labels.as_deref(), Some(&["已修复".to_string()][..]));
+        // owner/repo 从 issue_url 反推
+        assert_eq!(open[0].owner, "linxunxr");
+        assert_eq!(open[0].repo, "PathofIdleImmortals-bugs");
+
+        // 分页：per_page=2 第一页 2 条 + has_more
+        let (page1, has_more) = cache.list_issues("all", 1, 2).unwrap();
+        assert_eq!(page1.len(), 2);
+        assert!(has_more);
+        let (page2, has_more) = cache.list_issues("all", 2, 2).unwrap();
+        assert_eq!(page2.len(), 1);
+        assert!(!has_more);
+
+        // upsert 覆盖：#1 关闭后标签被替换，其余项不变
+        cache
+            .upsert_issues(&[item(1, "closed", "2026-09-01T10:00:00Z", None)])
+            .unwrap();
+        let (all, _) = cache.list_issues("all", 1, 30).unwrap();
+        assert_eq!(all.len(), 3); // 仍是 3 条，不会重复插入
+        let one = all.iter().find(|i| i.number == 1).unwrap();
+        assert_eq!(one.state, "closed");
+        assert_eq!(one.labels, None);
+    }
+
+    /// patch_issue_state 局部刷新 state/labels，不影响其它行
+    #[test]
+    fn patch_issue_state_updates_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("patch.db");
+        let cache = Cache::open(&db).unwrap();
+
+        let make = |n: u32| IssueListItem {
+            number: n,
+            report_id: format!("rid-{n}"),
+            title: format!("问题{n}"),
+            state: "open".to_string(),
+            issue_url: format!("https://github.com/o/r/issues/{n}"),
+            created_at: format!("2026-09-0{n}T10:00:00Z"),
+            owner: "o".to_string(),
+            repo: "r".to_string(),
+            app_version: None,
+            platform: None,
+            realm: None,
+            labels: Some(vec!["待验证".into()]),
+            player_id: None,
+            player_name: None,
+        };
+        cache.upsert_issues(&[make(1), make(2)]).unwrap();
+
+        // 关闭 #1 并换标签
+        cache
+            .patch_issue_state(1, Some("closed"), Some(&["高优先级".to_string()]))
+            .unwrap();
+        let (all, _) = cache.list_issues("all", 1, 30).unwrap();
+        let one = all.iter().find(|i| i.number == 1).unwrap();
+        let two = all.iter().find(|i| i.number == 2).unwrap();
+        assert_eq!(one.state, "closed");
+        assert_eq!(one.labels.as_deref(), Some(&["高优先级".to_string()][..]));
+        assert_eq!(two.state, "open"); // 其余行不受影响
+        assert_eq!(two.labels.as_deref(), Some(&["待验证".to_string()][..]));
+
+        // 只改 state 时 labels 不动
+        cache.patch_issue_state(2, Some("closed"), None).unwrap();
+        let (all, _) = cache.list_issues("all", 1, 30).unwrap();
+        let two = all.iter().find(|i| i.number == 2).unwrap();
+        assert_eq!(two.state, "closed");
+        assert_eq!(two.labels.as_deref(), Some(&["待验证".to_string()][..]));
     }
 }

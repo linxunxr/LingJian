@@ -103,7 +103,12 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
         >
           全部
         </button>
-        <button class="refresh-btn" :disabled="state.loading" @click="loadIssues" title="刷新">
+        <button
+          class="refresh-btn"
+          :disabled="state.loading"
+          @click="loadIssues({ refresh: true })"
+          title="刷新（回源拉取最新列表）"
+        >
           ↻
         </button>
       </div>
@@ -113,6 +118,14 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
     <div v-if="state.actionError" class="action-error">
       {{ state.actionError }}
       <button class="dismiss" @click="clearActionError">×</button>
+    </div>
+
+    <!-- 缓存来源提示：数据来自本地库，可点击回源刷新 -->
+    <div v-if="state.fromCache && !state.loading" class="cache-banner">
+      缓存数据<template v-if="state.cachedAt"> · 更新于 {{ formatTime(state.cachedAt) }}</template>
+      <button class="cache-refresh" :disabled="state.loading" @click="loadIssues({ refresh: true })">
+        刷新
+      </button>
     </div>
 
     <!-- 加载中（首拉） -->
@@ -450,6 +463,32 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
   font-size: 1rem;
   cursor: pointer;
   line-height: 1;
+}
+
+.cache-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  padding: 0.375rem 0.75rem;
+  background-color: rgba(148, 163, 184, 0.08);
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+}
+
+.cache-refresh {
+  background: none;
+  border: none;
+  color: var(--color-primary);
+  font-size: 0.75rem;
+  cursor: pointer;
+  padding: 0;
+}
+
+.cache-refresh:hover:not(:disabled) {
+  text-decoration: underline;
 }
 
 .empty {

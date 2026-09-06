@@ -64,11 +64,15 @@ export interface IssueListItem {
   playerName?: string
 }
 
-/** SCF /issues 端点的完整响应 */
+/** SCF /issues 端点的完整响应（缓存优先模式下由本地库填充来源标记） */
 export interface IssueList {
   issues: IssueListItem[]
   page: number
   hasMore: boolean
+  /** 数据来自本地缓存而非实时回源 */
+  fromCache?: boolean
+  /** 缓存最近一次回源时间（ISO 8601；仅 fromCache 时有意义） */
+  cachedAt?: string
 }
 
 /** SCF /issue/:number/action 端点的响应 */
