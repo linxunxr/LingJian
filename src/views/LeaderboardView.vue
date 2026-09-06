@@ -365,10 +365,10 @@ onMounted(() => {
 }
 
 .versions {
-  max-width: 14ch;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* 版本跨度需完整可读（发奖核对用），多版本时换行展示而非截断省略 */
+  min-width: 14ch;
+  max-width: 22ch;
+  overflow-wrap: anywhere;
 }
 
 .issues {
