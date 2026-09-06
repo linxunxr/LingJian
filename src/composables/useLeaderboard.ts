@@ -56,13 +56,16 @@ const state = reactive<LeaderboardState>({
 /** 拉全量分页上限（30 条/页 × 50 页 = 1500 条），防御 SCF hasMore 异常导致的死循环 */
 const MAX_PAGES = 50
 
-/** 循环拉取 state=all 的全部 Issue 列表（排行榜数据源，不依赖日志下载） */
+/** 循环拉取 state=all 的全部 Issue 列表（排行榜数据源，不依赖日志下载）。
+ *  page=1 强制回源：排行榜要求全量准确（含已关闭反馈），且缓存可能只有
+ *  open 状态的旧数据（v0.5.2 的缓存按请求状态分家同步的遗留）；后续页读本地库。 */
 async function fetchAllIssues(): Promise<IssueListItem[]> {
   const all: IssueListItem[] = []
   for (let page = 1; page <= MAX_PAGES; page++) {
     const result = await invoke<IssueList>('list_issues', {
       state: 'all',
       page,
+      refresh: page === 1,
       scfUrl: settings.scfUrl,
       apiKey: settings.apiKey,
     })
