@@ -101,6 +101,12 @@ pub struct IssueList {
     pub issues: Vec<IssueListItem>,
     pub page: u32,
     pub has_more: bool,
+    /// 数据来自本地缓存而非实时回源（命令层填充；SCF 响应无此字段）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_cache: Option<bool>,
+    /// 缓存最近一次回源时间（命令层填充；SCF 响应无此字段）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_at: Option<String>,
 }
 
 /// SCF `/issue/:number/action` 端点的响应

@@ -309,6 +309,37 @@ impl Cache {
             .map_err(|e| format!("查询失败: {e}"))?;
         Ok(cached_at)
     }
+
+    /// 局部刷新某条 Issue 缓存的 state/labels（操作 Issue 后同步，避免缓存读到旧状态）
+    pub fn patch_issue_state(
+        &self,
+        issue_number: u32,
+        state: Option<&str>,
+        labels: Option<&[String]>,
+    ) -> Result<(), String> {
+        let mut conn = self.conn.lock().map_err(|e| format!("数据库锁失败: {e}"))?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("开启事务失败: {e}"))?;
+        if let Some(new_state) = state {
+            tx.execute(
+                "UPDATE issue_list SET state = ? WHERE issue_number = ?",
+                params![new_state, issue_number as i64],
+            )
+            .map_err(|e| format!("更新 issue 状态失败: {e}"))?;
+        }
+        if let Some(new_labels) = labels {
+            let labels_json = serde_json::to_string(new_labels)
+                .map_err(|e| format!("序列化标签失败: {e}"))?;
+            tx.execute(
+                "UPDATE issue_list SET labels = ? WHERE issue_number = ?",
+                params![labels_json, issue_number as i64],
+            )
+            .map_err(|e| format!("更新 issue 标签失败: {e}"))?;
+        }
+        tx.commit().map_err(|e| format!("提交事务失败: {e}"))?;
+        Ok(())
+    }
 }
 
 /// rusqlite 行映射到 Report
@@ -589,5 +620,50 @@ mod tests {
         let one = all.iter().find(|i| i.number == 1).unwrap();
         assert_eq!(one.state, "closed");
         assert_eq!(one.labels, None);
+    }
+
+    /// patch_issue_state 局部刷新 state/labels，不影响其它行
+    #[test]
+    fn patch_issue_state_updates_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("patch.db");
+        let cache = Cache::open(&db).unwrap();
+
+        let make = |n: u32| IssueListItem {
+            number: n,
+            report_id: format!("rid-{n}"),
+            title: format!("问题{n}"),
+            state: "open".to_string(),
+            issue_url: format!("https://github.com/o/r/issues/{n}"),
+            created_at: format!("2026-09-0{n}T10:00:00Z"),
+            owner: "o".to_string(),
+            repo: "r".to_string(),
+            app_version: None,
+            platform: None,
+            realm: None,
+            labels: Some(vec!["待验证".into()]),
+            player_id: None,
+            player_name: None,
+        };
+        cache.upsert_issues(&[make(1), make(2)]).unwrap();
+
+        // 关闭 #1 并换标签
+        cache
+            .patch_issue_state(1, Some("closed"), Some(&["高优先级".to_string()]))
+            .unwrap();
+        let (all, _) = cache.list_issues("all", 1, 30).unwrap();
+        let one = all.iter().find(|i| i.number == 1).unwrap();
+        let two = all.iter().find(|i| i.number == 2).unwrap();
+        assert_eq!(one.state, "closed");
+        assert_eq!(one.labels.as_deref(), Some(&["高优先级".to_string()][..]));
+        assert_eq!(two.state, "open"); // 其余行不受影响
+        assert_eq!(two.labels.as_deref(), Some(&["待验证".to_string()][..]));
+
+        // 只改 state 时 labels 不动
+        cache.patch_issue_state(2, Some("closed"), None).unwrap();
+        let (all, _) = cache.list_issues("all", 1, 30).unwrap();
+        let two = all.iter().find(|i| i.number == 2).unwrap();
+        assert_eq!(two.state, "closed");
+        assert_eq!(two.labels.as_deref(), Some(&["待验证".to_string()][..]));
     }
 }
