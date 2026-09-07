@@ -9,6 +9,20 @@ type IssueState = 'open' | 'closed' | 'all'
 /** 预设标签（一期硬编码，后续可配置化；IssueList 与 AnalyzeView 共用） */
 export const PRESET_LABELS = ['已修复', '无法复现', '高优先级', '待验证'] as const
 
+/** 各状态 Issue 数（tab 徽标；all = open + closed） */
+export interface IssueCounts {
+  open: number
+  closed: number
+  all: number
+}
+
+/** 下载缺失日志的结果（download_missing_reports 返回） */
+export interface DownloadMissingResult {
+  downloaded: number
+  skipped: number
+  failed: string[]
+}
+
 interface IssuesState {
   /** 当前列表（跨页累积） */
   issues: IssueListItem[]
@@ -31,6 +45,12 @@ interface IssuesState {
   fromCache: boolean
   /** 缓存最近一次回源时间（ISO 8601；展示"更新于 X 前"用） */
   cachedAt: string | null
+  /** 各状态 Issue 数（tab 徽标；null = 尚未加载） */
+  counts: IssueCounts | null
+  /** 下载缺失日志进行中（按钮禁用与文案用） */
+  downloading: boolean
+  /** 最近一次下载缺失日志的结果（downloaded/skipped/failed 摘要） */
+  downloadResult: string | null
 }
 
 const state = reactive<IssuesState>({
@@ -46,6 +66,9 @@ const state = reactive<IssuesState>({
   actionError: null,
   fromCache: false,
   cachedAt: null,
+  counts: null,
+  downloading: false,
+  downloadResult: null,
 })
 
 /** 重置列表到初始状态（切换 tab / 手动刷新时用） */
@@ -54,6 +77,15 @@ function resetList() {
   state.page = 0
   state.hasMore = false
   state.loaded = false
+}
+
+/** 刷新各状态 Issue 计数（tab 徽标；失败静默——徽标缺失不影响主流程） */
+export async function refreshCounts(): Promise<void> {
+  try {
+    state.counts = await invoke<IssueCounts>('issue_counts')
+  } catch {
+    // 计数是辅助信息，失败保持旧值
+  }
 }
 
 /**
@@ -89,6 +121,8 @@ export async function loadIssues(opts?: { refresh?: boolean }): Promise<void> {
     state.fromCache = !!result.fromCache
     state.cachedAt = result.cachedAt ?? null
     state.loaded = true
+    // 计数与列表并行无依赖，放 finally 前单独拉，失败不掩盖列表结果
+    void refreshCounts()
   } catch (e) {
     state.error = typeof e === 'string' ? e : String(e)
   } finally {
@@ -163,6 +197,8 @@ export async function actOnIssue(
       if (typeof result.state === 'string') item.state = result.state
       if (Array.isArray(result.labels)) item.labels = result.labels
     }
+    // 关闭/重开改变了 open/closed 计数，同步刷新徽标
+    if (typeof result.state === 'string') void refreshCounts()
     return true
   } catch (e) {
     state.actionError = typeof e === 'string' ? e : String(e)
@@ -177,6 +213,57 @@ export function clearActionError() {
   state.actionError = null
 }
 
+/** 重置状态到初始（测试用；运行时状态是模块级单例，跨用例需显式清理） */
+export function resetIssuesState() {
+  Object.assign(state, {
+    issues: [],
+    loading: false,
+    loadingMore: false,
+    error: null,
+    state: 'open' as IssueState,
+    page: 0,
+    hasMore: false,
+    loaded: false,
+    actingNumber: null,
+    actionError: null,
+    fromCache: false,
+    cachedAt: null,
+    counts: null,
+    downloading: false,
+    downloadResult: null,
+  })
+}
+
+/**
+ * 下载缺失日志（软件本体的下载入口，MCP 侧只读不下载）。
+ * 增量同步列表镜像后逐条下载本地没有的日志（默认当前 tab 状态），
+ * 完成后刷新列表与计数。结果摘要写入 downloadResult 供界面提示。
+ */
+export async function downloadMissing(): Promise<void> {
+  if (!settings.scfUrl.trim() || !settings.apiKey.trim()) {
+    state.downloadResult = '未配置 SCF 端点，请先到设置页填写'
+    return
+  }
+  state.downloading = true
+  state.downloadResult = null
+  try {
+    const result = await invoke<DownloadMissingResult>('download_missing_reports', {
+      state: state.state,
+      scfUrl: settings.scfUrl,
+      apiKey: settings.apiKey,
+    })
+    const parts = [`新下载 ${result.downloaded} 条`, `已有 ${result.skipped} 条`]
+    if (result.failed.length > 0) parts.push(`失败 ${result.failed.length} 条`)
+    state.downloadResult = parts.join('，')
+    // 下载完成后刷新列表与计数（新日志可分析了，列表数据也更新了）
+    await Promise.all([loadIssues(), refreshCounts()])
+  } catch (e) {
+    state.downloadResult = `下载失败: ${typeof e === 'string' ? e : String(e)}`
+  } finally {
+    state.downloading = false
+  }
+}
+
 export function useIssues() {
   return {
     state: readonly(state),
@@ -185,5 +272,7 @@ export function useIssues() {
     loadMore,
     actOnIssue,
     clearActionError,
+    refreshCounts,
+    downloadMissing,
   }
 }

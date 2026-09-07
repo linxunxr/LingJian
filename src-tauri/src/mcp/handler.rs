@@ -19,8 +19,9 @@ use crate::services::downloader;
 use super::dto::{
     AddCommentParams, AnalysisResultDto, AnalyzeReportParams, CloseIssueParams, ErrorAggregateDto,
     GetReportParams, GetScreenshotsParams, IssueActionResultDto, IssueBriefDto, IssueListResult,
-    LevelCountsDto, ListIssuesParams, LogEntryDto, LogFilterDto, QueryLogsParams, QueryLogsResult,
-    RemoteIssueDto, ReopenIssueParams, SyncLatestParams, SyncResultDto, TagCountDto,
+    IssueStatsDto, LevelCountsDto, ListIssuesParams, ListRemoteIssuesParams, LogEntryDto,
+    LogFilterDto, QueryLogsParams, QueryLogsResult, RemoteIssueDto, RemoteIssueEntryDto,
+    RemoteIssueListResult, ReopenIssueParams, SyncLatestParams, SyncResultDto, TagCountDto,
     TimelinePointDto, UpdateLabelsParams,
 };
 
@@ -411,131 +412,172 @@ impl LingjianServer {
 
     #[tool(
         name = "sync_latest",
-        description = "从 SCF 拉取远端 Issue 上报列表，并把本地缺失的日志下载落库（已有自动跳过）。仅写本地数据库，不改动 GitHub Issue",
+        description = "从 SCF 同步最新数据到本地（与灵鉴界面「⇩ 日志」按钮同一入口）：先增量刷新 Issue 列表缓存镜像，再下载本地缺失的日志（download=false 跳过下载）。默认只下载 open（未处理），需要补全量传 all。同步后 list_remote_issues/issue_stats/list_issues 即为最新。仅写本地库，不改动 GitHub Issue",
         annotations(read_only_hint = true)
     )]
     async fn sync_latest(
         &self,
-        Parameters(SyncLatestParams {
-            state,
-            page,
-            download,
-        }): Parameters<SyncLatestParams>,
+        Parameters(SyncLatestParams { state, download }): Parameters<SyncLatestParams>,
     ) -> Result<Json<SyncResultDto>, ErrorData> {
         let (scf_url, api_key) = self.scf_config()?;
+        let cache = self.cache();
+        let app_state = self.app.state::<crate::AppState>();
+        let client = app_state.client.clone();
+        let cache_dir = app_state.cache_dir.clone();
+
+        let st = match state.as_deref().unwrap_or("open") {
+            "all" => "all",
+            "closed" => "closed",
+            _ => "open",
+        };
+
+        let result = if download.unwrap_or(true) {
+            crate::commands::issue::sync_and_download(st, &scf_url, &api_key, &client, &cache, &cache_dir)
+                .await
+                .map_err(|e| ErrorData::internal_error(format!("同步失败: {e}"), None))?
+        } else {
+            crate::commands::issue::sync_cache_incremental(&scf_url, &api_key, &client, &cache)
+                .await
+                .map_err(|e| ErrorData::internal_error(format!("同步缓存失败: {e}"), None))?;
+            crate::commands::issue::DownloadMissingResult {
+                downloaded: 0,
+                skipped: 0,
+                failed: Vec::new(),
+            }
+        };
+
+        // 返回同步后的最新一页（与界面同源），供 AI 直接看当前反馈
+        let (items, _has_more) = {
+            let c = cache.clone();
+            tauri::async_runtime::spawn_blocking(move || c.list_issues("all", 1, 30))
+                .await
+                .map_err(|e| ErrorData::internal_error(format!("查询任务失败: {e}"), None))?
+                .map_err(|e| ErrorData::internal_error(format!("读取 Issue 缓存失败: {e}"), None))?
+        };
+
+        Ok(Json(SyncResultDto {
+            issues: items
+                .into_iter()
+                .map(|i| RemoteIssueDto {
+                    number: i.number,
+                    report_id: i.report_id,
+                    title: i.title,
+                    state: i.state,
+                    issue_url: i.issue_url,
+                    created_at: i.created_at,
+                })
+                .collect(),
+            has_more: false,
+            downloaded: result.downloaded,
+            skipped: result.skipped,
+            failed: result.failed,
+        }))
+    }
+
+    #[tool(
+        name = "issue_stats",
+        description = "查询各状态的用户反馈 Issue 数量（未处理 open / 已处理 closed / 全部 all，来自本地缓存镜像，与灵鉴界面问题列表同源，不实时回源）。数据不是最新的话先调 sync_latest 同步",
+        annotations(read_only_hint = true)
+    )]
+    async fn issue_stats(&self) -> Result<Json<IssueStatsDto>, ErrorData> {
+        let _ = self.scf_config()?;
+        let cache = self.cache();
+
+        let counts = {
+            let c = cache.clone();
+            tauri::async_runtime::spawn_blocking(move || c.count_issues_by_state())
+                .await
+                .map_err(|e| ErrorData::internal_error(format!("查询任务失败: {e}"), None))?
+                .map_err(|e| ErrorData::internal_error(format!("查询 Issue 计数失败: {e}"), None))?
+        };
+        let cached_at = {
+            let c = cache.clone();
+            tauri::async_runtime::spawn_blocking(move || c.issues_cached_at())
+                .await
+                .map_err(|e| ErrorData::internal_error(format!("查询任务失败: {e}"), None))?
+                .map_err(|e| ErrorData::internal_error(format!("查询缓存时间失败: {e}"), None))?
+        };
+
+        Ok(Json(IssueStatsDto {
+            open: counts.open,
+            closed: counts.closed,
+            all: counts.all,
+            cached_at,
+        }))
+    }
+
+    /// 每页条数与界面问题列表/SCF 端点一致（github.js PER_PAGE=30）
+    const REMOTE_PER_PAGE: u32 = 30;
+
+    #[tool(
+        name = "list_remote_issues",
+        description = "列出远端反馈 Issue（未处理/已处理/全部，来自本地缓存镜像，与灵鉴界面问题列表同源，不实时回源）。条目带 downloaded 标记——日志已下载的可直接 analyze_report；未下载的调 sync_latest 同步（会下载缺失日志）。要的是已分析过的本地记录用 list_issues",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_remote_issues(
+        &self,
+        Parameters(ListRemoteIssuesParams { state, page }): Parameters<ListRemoteIssuesParams>,
+    ) -> Result<Json<RemoteIssueListResult>, ErrorData> {
+        let _ = self.scf_config()?;
+        let cache = self.cache();
+
         let st = match state.as_deref().unwrap_or("open") {
             "all" => "all",
             "closed" => "closed",
             _ => "open",
         };
         let pg = page.unwrap_or(1).max(1);
-        let do_download = download.unwrap_or(true);
 
-        let app_state = self.app.state::<crate::AppState>();
-        let client = app_state.client.clone();
-        let cache = app_state.cache.clone();
-        let cache_dir = app_state.cache_dir.clone();
+        let (items, has_more) = {
+            let c = cache.clone();
+            let s = st.to_string();
+                tauri::async_runtime::spawn_blocking(move || c.list_issues(&s, pg, Self::REMOTE_PER_PAGE))
+                .await
+                .map_err(|e| ErrorData::internal_error(format!("查询任务失败: {e}"), None))?
+                .map_err(|e| ErrorData::internal_error(format!("读取 Issue 缓存失败: {e}"), None))?
+        };
+        let cached_at = {
+            let c = cache.clone();
+            tauri::async_runtime::spawn_blocking(move || c.issues_cached_at())
+                .await
+                .map_err(|e| ErrorData::internal_error(format!("查询任务失败: {e}"), None))?
+                .map_err(|e| ErrorData::internal_error(format!("查询缓存时间失败: {e}"), None))?
+        };
+        // 批量标记日志下载状态（已下载的才能 analyze_report）
+        let downloaded = {
+            let c = cache.clone();
+            let rids: Vec<String> = items.iter().map(|i| i.report_id.clone()).collect();
+            tauri::async_runtime::spawn_blocking(move || c.reports_exist(&rids))
+                .await
+                .map_err(|e| ErrorData::internal_error(format!("查询任务失败: {e}"), None))?
+                .map_err(|e| ErrorData::internal_error(format!("查询下载状态失败: {e}"), None))?
+        };
 
-        let list = downloader::list_issues(&scf_url, st, pg, &api_key, &client)
-            .await
-            .map_err(|e| ErrorData::internal_error(format!("拉取远端列表失败: {e}"), None))?;
+        let issues = items
+            .into_iter()
+            .zip(downloaded)
+            .map(|(i, dl)| RemoteIssueEntryDto {
+                number: i.number,
+                report_id: i.report_id,
+                title: i.title,
+                state: i.state,
+                issue_url: i.issue_url,
+                created_at: i.created_at,
+                labels: i.labels,
+                app_version: i.app_version,
+                platform: i.platform,
+                realm: i.realm,
+                player_id: i.player_id,
+                player_name: i.player_name,
+                downloaded: dl,
+            })
+            .collect();
 
-        let mut downloaded = 0usize;
-        let mut skipped = 0usize;
-        let mut failed: Vec<String> = Vec::new();
-
-        for item in &list.issues {
-            // 本地已有则跳过
-            let rid = item.report_id.clone();
-            let exists = {
-                let cache = cache.clone();
-                tauri::async_runtime::spawn_blocking(move || cache.get_report(&rid))
-                    .await
-                    .map_err(|e| ErrorData::internal_error(format!("查询任务失败: {e}"), None))?
-                    .map_err(|e| ErrorData::internal_error(format!("查询上报失败: {e}"), None))?
-                    .is_some()
-            };
-            if exists {
-                skipped += 1;
-                continue;
-            }
-            if !do_download {
-                continue;
-            }
-
-            // 先解析完整元信息（用户反馈/游玩时长仅 /issue/:number 端点返回），
-            // 失败则降级用列表信息落库
-            let info = downloader::resolve_issue(&scf_url, item.number, &api_key, &client).await.ok();
-
-            let report_id = info
-                .as_ref()
-                .map(|i| i.report_id.clone())
-                .unwrap_or_else(|| item.report_id.clone());
-
-            match downloader::download(&scf_url, &report_id, &api_key, &client, &cache_dir).await {
-                Ok((entries, _size)) => {
-                    let now = chrono::Utc::now().to_rfc3339();
-                    let report = Report {
-                        report_id: report_id.clone(),
-                        issue_number: Some(item.number as i32),
-                        issue_title: Some(item.title.clone()),
-                        app_name: None,
-                        app_version: info
-                            .as_ref()
-                            .and_then(|i| i.app_version.clone())
-                            .or_else(|| item.app_version.clone()),
-                        platform: info
-                            .as_ref()
-                            .and_then(|i| i.platform.clone())
-                            .or_else(|| item.platform.clone()),
-                        realm: info
-                            .as_ref()
-                            .and_then(|i| i.realm.clone())
-                            .or_else(|| item.realm.clone()),
-                        // SCF 的 playTime 为字符串（如 "1234"），落库解析为秒数
-                        play_time: info
-                            .as_ref()
-                            .and_then(|i| i.play_time.as_deref())
-                            .and_then(|s| s.parse::<u64>().ok()),
-                        user_description: info.as_ref().and_then(|i| i.user_description.clone()),
-                        screenshot_keys: info.as_ref().and_then(|i| i.screenshot_keys.clone()),
-                        report_time: now.clone(),
-                        log_count: entries.len(),
-                        downloaded_at: now,
-                    };
-                    let cache = cache.clone();
-                    let saved = tauri::async_runtime::spawn_blocking(move || {
-                        cache.save_report(&report, &entries)
-                    })
-                    .await
-                    .map_err(|e| ErrorData::internal_error(format!("落库任务失败: {e}"), None))?;
-                    if let Err(e) = saved {
-                        failed.push(format!("#{}: 落库失败 {e}", item.number));
-                    } else {
-                        downloaded += 1;
-                    }
-                }
-                Err(e) => failed.push(format!("#{}: 下载失败 {e}", item.number)),
-            }
-        }
-
-        Ok(Json(SyncResultDto {
-            issues: list
-                .issues
-                .iter()
-                .map(|i| RemoteIssueDto {
-                    number: i.number,
-                    report_id: i.report_id.clone(),
-                    title: i.title.clone(),
-                    state: i.state.clone(),
-                    issue_url: i.issue_url.clone(),
-                    created_at: i.created_at.clone(),
-                })
-                .collect(),
-            has_more: list.has_more,
-            downloaded,
-            skipped,
-            failed,
+        Ok(Json(RemoteIssueListResult {
+            issues,
+            page: pg,
+            has_more,
+            cached_at,
         }))
     }
 
@@ -596,6 +638,6 @@ impl LingjianServer {
 // get_info 由 #[tool_handler] 生成，名称/引导语在此定制（version 宏属性不支持表达式，用默认值）
 #[tool_handler(
     name = "lingjian",
-    instructions = "灵鉴（LingJian）日志分析工具。先用 list_issues 看已下载的上报（sync_latest 可从 SCF 同步新上报），analyze_report 获取错误聚合与统计，query_logs 分页查看原始日志；分析定位后回写处理结果：close_issue 传 fixed_in 版本号即走完整关单流程（关闭+版本标签+解决评论，与灵鉴界面一致），另有 add_comment / update_labels / reopen_issue（写操作需灵鉴设置页开启「允许写操作」）。"
+    instructions = "灵鉴（LingJian）日志分析工具。先用 issue_stats 看处理进度、list_remote_issues 看远端反馈（数据来自本地缓存），需要最新数据或日志未下载时调 sync_latest 同步（列表 + 缺失日志）；analyze_report 获取错误聚合与统计，query_logs 分页查看原始日志，list_issues/get_report 查本地已有上报；分析定位后回写处理结果：close_issue 传 fixed_in 版本号即走完整关单流程（关闭+版本标签+解决评论，与灵鉴界面一致），另有 add_comment / update_labels / reopen_issue（写操作需灵鉴设置页开启「允许写操作」）。"
 )]
 impl ServerHandler for LingjianServer {}

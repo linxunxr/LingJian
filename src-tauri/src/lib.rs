@@ -102,6 +102,8 @@ pub fn run() {
             issue::parse_issue_url,
             issue::fetch_issue_info,
             issue::list_issues,
+            issue::issue_counts,
+            issue::download_missing_reports,
             issue::act_on_issue,
             issue::is_report_id_input,
             download::download_log,

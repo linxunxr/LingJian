@@ -273,13 +273,10 @@ pub struct QueryLogsResult {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncLatestParams {
-    /// Issue 状态筛选：open / closed / all，默认 open
+    /// 下载哪个状态的缺失日志：open（默认）/ closed / all
     #[serde(default)]
     pub state: Option<String>,
-    /// 页码，默认 1
-    #[serde(default)]
-    pub page: Option<u32>,
-    /// 是否下载缺失的日志到本地（默认 true；false 时仅返回远端列表）
+    /// 是否下载本地缺失的日志（默认 true；false 时仅增量刷新列表缓存镜像）
     #[serde(default)]
     pub download: Option<bool>,
 }
@@ -296,6 +293,52 @@ pub struct RemoteIssueDto {
     pub created_at: String,
 }
 
+/// list_remote_issues 入参
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListRemoteIssuesParams {
+    /// 状态筛选：open（未处理）/ closed / all，默认 open
+    #[serde(default)]
+    pub state: Option<String>,
+    /// 页码，默认 1（每页 30 条，与界面问题列表一致）
+    #[serde(default)]
+    pub page: Option<u32>,
+}
+
+/// list_remote_issues 条目：远端 Issue 列表 + 本地下载状态
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteIssueEntryDto {
+    pub number: u32,
+    pub report_id: String,
+    pub title: String,
+    /// open / closed
+    pub state: String,
+    pub issue_url: String,
+    pub created_at: String,
+    /// 当前标签
+    pub labels: Option<Vec<String>>,
+    pub app_version: Option<String>,
+    pub platform: Option<String>,
+    pub realm: Option<String>,
+    /// 玩家身份标识（steam:SteamID64 / device:UUID；老 Issue 无）
+    pub player_id: Option<String>,
+    pub player_name: Option<String>,
+    /// 该上报的日志是否已下载到本地（已下载的才能用 analyze_report 分析）
+    pub downloaded: bool,
+}
+
+/// list_remote_issues 返回
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteIssueListResult {
+    pub issues: Vec<RemoteIssueEntryDto>,
+    pub page: u32,
+    pub has_more: bool,
+    /// 缓存最近一次回源时间（ISO 8601）
+    pub cached_at: Option<String>,
+}
+
 /// sync_latest 返回
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -309,6 +352,20 @@ pub struct SyncResultDto {
     pub skipped: usize,
     /// 下载失败的 issue 编号与原因
     pub failed: Vec<String>,
+}
+
+/// issue_stats 返回：各状态的上报 Issue 数（读本地缓存，缓存为空时工具内先同步一次）
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueStatsDto {
+    /// 未处理（open）数量
+    pub open: u32,
+    /// 已处理（closed）数量
+    pub closed: u32,
+    /// 全部数量（open + closed）
+    pub all: u32,
+    /// 缓存最近一次回源时间（ISO 8601；同步失败时可能仍是旧数据的时间）
+    pub cached_at: Option<String>,
 }
 
 /// add_comment 入参

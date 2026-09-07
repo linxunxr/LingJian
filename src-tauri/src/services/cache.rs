@@ -2,10 +2,19 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use rusqlite::{params, Connection};
+use serde::Serialize;
 
 use crate::models::log_entry::{LogEntry, LogLevel};
 use crate::models::report::Report;
 use crate::services::github::IssueListItem;
+
+/// issue_list 缓存按 state 的计数（open/closed 实存，all 为两者之和）
+#[derive(Debug, Default, Clone, Copy, Serialize)]
+pub struct IssueCounts {
+    pub open: u32,
+    pub closed: u32,
+    pub all: u32,
+}
 
 /// SQLite 缓存，持有连接（内部可变，跨线程共享）
 pub struct Cache {
@@ -308,6 +317,100 @@ impl Cache {
             })
             .map_err(|e| format!("查询失败: {e}"))?;
         Ok(cached_at)
+    }
+
+    /// 缓存中最新的 Issue 创建时间（增量同步水位线）。
+    ///
+    /// 远端按 created_at 倒序分页，增量同步翻页时一旦页尾时间早于该值，
+    /// 即可判定后续页全是已同步过的旧数据而提前停止。空库返回 None（退化为全量）。
+    pub fn latest_issue_created_at(&self) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("数据库锁失败: {e}"))?;
+        let latest: Option<String> = conn
+            .query_row("SELECT MAX(created_at) FROM issue_list", [], |row| {
+                row.get(0)
+            })
+            .map_err(|e| format!("查询失败: {e}"))?;
+        Ok(latest)
+    }
+
+    /// 各状态的 Issue 缓存计数（问题列表 tab 徽标用）。
+    /// open/closed 为实际值，all 为两者之和（库内不存"all"状态）。
+    pub fn count_issues_by_state(&self) -> Result<IssueCounts, String> {
+        let conn = self.conn.lock().map_err(|e| format!("数据库锁失败: {e}"))?;
+        let mut stmt = conn
+            .prepare("SELECT state, COUNT(*) FROM issue_list GROUP BY state")
+            .map_err(|e| format!("查询预编译失败: {e}"))?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+            .map_err(|e| format!("查询失败: {e}"))?;
+
+        let mut counts = IssueCounts::default();
+        for r in rows {
+            let (state, n) = r.map_err(|e| format!("读取行失败: {e}"))?;
+            match state.as_str() {
+                "open" => counts.open = n as u32,
+                "closed" => counts.closed = n as u32,
+                _ => {}
+            }
+        }
+        counts.all = counts.open + counts.closed;
+        Ok(counts)
+    }
+
+    /// 批量判断 report_id 是否已有下载的上报日志（MCP 远端列表的 downloaded 标记用）
+    pub fn reports_exist(&self, report_ids: &[String]) -> Result<Vec<bool>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("数据库锁失败: {e}"))?;
+        let mut stmt = conn
+            .prepare("SELECT 1 FROM reports WHERE report_id = ? LIMIT 1")
+            .map_err(|e| format!("查询预编译失败: {e}"))?;
+        report_ids
+            .iter()
+            .map(|rid| {
+                stmt.exists(params![rid])
+                    .map_err(|e| format!("查询失败: {e}"))
+            })
+            .collect()
+    }
+
+    /// 全量同步收尾：删除本地库中已不在远端的 Issue（远端被删/误同步的脏数据）。
+    ///
+    /// 全量模式已拉到远端最后一页，本地多出来的必然是远端已删除的，
+    /// 留着会让排行榜聚合出幽灵条目。按 issue_number 主键比对。
+    pub fn purge_issues_not_in(
+        &self,
+        remote_numbers: &[u32],
+    ) -> Result<(usize, usize), String> {
+        if remote_numbers.is_empty() {
+            // 远端为空却清空本地风险太大（可能是拉取异常），宁可保留
+            return Ok((0, 0));
+        }
+        let mut conn = self.conn.lock().map_err(|e| format!("数据库锁失败: {e}"))?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("开启事务失败: {e}"))?;
+
+        let local: Vec<i64> = {
+            let mut stmt = tx
+                .prepare("SELECT issue_number FROM issue_list")
+                .map_err(|e| format!("查询预编译失败: {e}"))?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, i64>(0))
+                .map_err(|e| format!("查询失败: {e}"))?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("读取行失败: {e}"))?
+        };
+
+        let remote: std::collections::HashSet<i64>
+            = remote_numbers.iter().map(|&n| n as i64).collect();
+        let stale: Vec<i64> = local.into_iter().filter(|n| !remote.contains(n)).collect();
+
+        for number in &stale {
+            tx.execute("DELETE FROM issue_list WHERE issue_number = ?", params![number])
+                .map_err(|e| format!("删除过期 Issue #{number} 失败: {e}"))?;
+        }
+        tx.commit().map_err(|e| format!("提交事务失败: {e}"))?;
+
+        Ok((stale.len(), remote_numbers.len()))
     }
 
     /// 局部刷新某条 Issue 缓存的 state/labels（操作 Issue 后同步，避免缓存读到旧状态）
@@ -665,5 +768,158 @@ mod tests {
         let two = all.iter().find(|i| i.number == 2).unwrap();
         assert_eq!(two.state, "closed");
         assert_eq!(two.labels.as_deref(), Some(&["待验证".to_string()][..]));
+    }
+
+    /// 增量水位线：latest_issue_created_at 返回库内最新 created_at，空库为 None
+    #[test]
+    fn latest_issue_created_at_watermark() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::open(&dir.path().join("mark.db")).unwrap();
+
+        assert!(cache.latest_issue_created_at().unwrap().is_none());
+
+        let item = |n: u32, created: &str| IssueListItem {
+            number: n,
+            report_id: format!("rid-{n}"),
+            title: format!("问题{n}"),
+            state: "open".to_string(),
+            issue_url: format!("https://github.com/o/r/issues/{n}"),
+            created_at: created.to_string(),
+            owner: "o".to_string(),
+            repo: "r".to_string(),
+            app_version: None,
+            platform: None,
+            realm: None,
+            labels: None,
+            player_id: None,
+            player_name: None,
+        };
+        cache
+            .upsert_issues(&[
+                item(1, "2026-09-01T10:00:00Z"),
+                item(2, "2026-09-05T10:00:00Z"),
+                item(3, "2026-09-03T10:00:00Z"),
+            ])
+            .unwrap();
+        assert_eq!(
+            cache.latest_issue_created_at().unwrap().as_deref(),
+            Some("2026-09-05T10:00:00Z")
+        );
+    }
+
+    /// 各状态计数：open/closed 实存值，all 为两者之和；未知状态忽略
+    #[test]
+    fn count_issues_by_state_sums() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::open(&dir.path().join("counts.db")).unwrap();
+
+        let item = |n: u32, state: &str| IssueListItem {
+            number: n,
+            report_id: format!("rid-{n}"),
+            title: format!("问题{n}"),
+            state: state.to_string(),
+            issue_url: format!("https://github.com/o/r/issues/{n}"),
+            created_at: format!("2026-09-0{n}T10:00:00Z"),
+            owner: "o".to_string(),
+            repo: "r".to_string(),
+            app_version: None,
+            platform: None,
+            realm: None,
+            labels: None,
+            player_id: None,
+            player_name: None,
+        };
+
+        // 空库全 0
+        assert_eq!(cache.count_issues_by_state().unwrap().all, 0);
+
+        cache
+            .upsert_issues(&[
+                item(1, "open"),
+                item(2, "open"),
+                item(3, "closed"),
+            ])
+            .unwrap();
+        let c = cache.count_issues_by_state().unwrap();
+        assert_eq!((c.open, c.closed, c.all), (2, 1, 3));
+
+        // upsert 改状态后计数跟随（#1 关闭）
+        cache.upsert_issues(&[item(1, "closed")]).unwrap();
+        let c = cache.count_issues_by_state().unwrap();
+        assert_eq!((c.open, c.closed, c.all), (1, 2, 3));
+    }
+
+    /// reports_exist 批量判断下载状态：空列表/混合存在与不存在均正确
+    #[test]
+    fn reports_exist_checks_each_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::open(&dir.path().join("exists.db")).unwrap();
+
+        let report = Report {
+            report_id: "rid-1".to_string(),
+            issue_number: None,
+            issue_title: None,
+            app_name: None,
+            app_version: None,
+            platform: None,
+            realm: None,
+            play_time: None,
+            user_description: None,
+            screenshot_keys: None,
+            report_time: "2026-09-07T10:00:00Z".to_string(),
+            log_count: 0,
+            downloaded_at: "2026-09-07T10:00:01Z".to_string(),
+        };
+        cache.save_report(&report, &[]).unwrap();
+
+        assert_eq!(cache.reports_exist(&[]).unwrap(), Vec::<bool>::new());
+        assert_eq!(
+            cache.reports_exist(&["rid-1".into(), "rid-2".into()]).unwrap(),
+            vec![true, false]
+        );
+    }
+
+    /// 全量清理：远端不存在的本地条目被删；远端列表为空时不动本地（防误清）
+    #[test]
+    fn purge_issues_not_in_removes_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::open(&dir.path().join("purge.db")).unwrap();
+
+        let item = |n: u32, created: &str| IssueListItem {
+            number: n,
+            report_id: format!("rid-{n}"),
+            title: format!("问题{n}"),
+            state: "open".to_string(),
+            issue_url: format!("https://github.com/o/r/issues/{n}"),
+            created_at: created.to_string(),
+            owner: "o".to_string(),
+            repo: "r".to_string(),
+            app_version: None,
+            platform: None,
+            realm: None,
+            labels: None,
+            player_id: None,
+            player_name: None,
+        };
+        cache
+            .upsert_issues(&[
+                item(1, "2026-09-01T10:00:00Z"),
+                item(2, "2026-09-02T10:00:00Z"),
+                item(3, "2026-09-03T10:00:00Z"),
+            ])
+            .unwrap();
+
+        // 远端只剩 #2、#3：#1 被清理
+        let (removed, total) = cache.purge_issues_not_in(&[2, 3]).unwrap();
+        assert_eq!((removed, total), (1, 2));
+        let (all, _) = cache.list_issues("all", 1, 30).unwrap();
+        let numbers: Vec<u32> = all.iter().map(|i| i.number).collect();
+        assert_eq!(numbers, vec![3, 2]);
+
+        // 远端列表为空：不动本地（拉取异常时宁可保留）
+        let (removed, _) = cache.purge_issues_not_in(&[]).unwrap();
+        assert_eq!(removed, 0);
+        let (all, _) = cache.list_issues("all", 1, 30).unwrap();
+        assert_eq!(all.len(), 2);
     }
 }

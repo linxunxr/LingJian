@@ -44,8 +44,21 @@ onMounted(() => {
         </p>
       </div>
       <div class="toolbar-actions">
-        <button class="btn" :disabled="state.loading || !settingsReady" @click="loadLeaderboard()">
-          {{ state.loading ? '加载中…' : '刷新' }}
+        <button
+          class="btn"
+          :disabled="state.loading || !settingsReady"
+          :title="'增量刷新：只补上次之后的新反馈（含状态变更），日常用这个'"
+          @click="loadLeaderboard()"
+        >
+          {{ state.loading && !state.fullSyncing ? '加载中…' : '刷新' }}
+        </button>
+        <button
+          class="btn"
+          :disabled="state.loading || !settingsReady"
+          :title="'全量同步：重新拉取远端全部反馈，并清理远端已删除的条目；数据存疑或发奖前核对时用'"
+          @click="loadLeaderboard({ mode: 'full' })"
+        >
+          {{ state.fullSyncing ? '全量同步中…' : '全量同步' }}
         </button>
         <button
           class="btn btn-primary"
@@ -86,9 +99,15 @@ onMounted(() => {
           <span class="summary-value summary-time">{{ formatTime(state.loadedAt) }}</span>
           <span class="summary-label">数据截至</span>
         </div>
+        <div v-if="state.lastFullSyncAt" class="summary-item">
+          <span class="summary-value summary-time">{{ formatTime(state.lastFullSyncAt) }}</span>
+          <span class="summary-label">上次全量同步</span>
+        </div>
       </div>
 
-      <div v-if="state.loading && state.entries.length === 0" class="empty">正在拉取全部反馈…</div>
+      <div v-if="state.loading && state.entries.length === 0" class="empty">
+        {{ state.fullSyncing ? '正在全量同步全部反馈…' : '正在拉取全部反馈…' }}
+      </div>
       <div v-else-if="!state.loading && state.entries.length === 0" class="empty">
         暂无带玩家标识的反馈（身份标识自游戏 v0.10.14 起随上报携带，之前的反馈无法归属到人）。
       </div>
