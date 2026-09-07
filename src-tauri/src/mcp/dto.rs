@@ -296,6 +296,52 @@ pub struct RemoteIssueDto {
     pub created_at: String,
 }
 
+/// list_remote_issues 入参
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListRemoteIssuesParams {
+    /// 状态筛选：open（未处理）/ closed / all，默认 open
+    #[serde(default)]
+    pub state: Option<String>,
+    /// 页码，默认 1（每页 30 条，与界面问题列表一致）
+    #[serde(default)]
+    pub page: Option<u32>,
+}
+
+/// list_remote_issues 条目：远端 Issue 列表 + 本地下载状态
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteIssueEntryDto {
+    pub number: u32,
+    pub report_id: String,
+    pub title: String,
+    /// open / closed
+    pub state: String,
+    pub issue_url: String,
+    pub created_at: String,
+    /// 当前标签
+    pub labels: Option<Vec<String>>,
+    pub app_version: Option<String>,
+    pub platform: Option<String>,
+    pub realm: Option<String>,
+    /// 玩家身份标识（steam:SteamID64 / device:UUID；老 Issue 无）
+    pub player_id: Option<String>,
+    pub player_name: Option<String>,
+    /// 该上报的日志是否已下载到本地（已下载的才能用 analyze_report 分析）
+    pub downloaded: bool,
+}
+
+/// list_remote_issues 返回
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteIssueListResult {
+    pub issues: Vec<RemoteIssueEntryDto>,
+    pub page: u32,
+    pub has_more: bool,
+    /// 缓存最近一次回源时间（ISO 8601）
+    pub cached_at: Option<String>,
+}
+
 /// sync_latest 返回
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

@@ -357,6 +357,21 @@ impl Cache {
         Ok(counts)
     }
 
+    /// 批量判断 report_id 是否已有下载的上报日志（MCP 远端列表的 downloaded 标记用）
+    pub fn reports_exist(&self, report_ids: &[String]) -> Result<Vec<bool>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("数据库锁失败: {e}"))?;
+        let mut stmt = conn
+            .prepare("SELECT 1 FROM reports WHERE report_id = ? LIMIT 1")
+            .map_err(|e| format!("查询预编译失败: {e}"))?;
+        report_ids
+            .iter()
+            .map(|rid| {
+                stmt.exists(params![rid])
+                    .map_err(|e| format!("查询失败: {e}"))
+            })
+            .collect()
+    }
+
     /// 全量同步收尾：删除本地库中已不在远端的 Issue（远端被删/误同步的脏数据）。
     ///
     /// 全量模式已拉到远端最后一页，本地多出来的必然是远端已删除的，
@@ -832,6 +847,36 @@ mod tests {
         cache.upsert_issues(&[item(1, "closed")]).unwrap();
         let c = cache.count_issues_by_state().unwrap();
         assert_eq!((c.open, c.closed, c.all), (1, 2, 3));
+    }
+
+    /// reports_exist 批量判断下载状态：空列表/混合存在与不存在均正确
+    #[test]
+    fn reports_exist_checks_each_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::open(&dir.path().join("exists.db")).unwrap();
+
+        let report = Report {
+            report_id: "rid-1".to_string(),
+            issue_number: None,
+            issue_title: None,
+            app_name: None,
+            app_version: None,
+            platform: None,
+            realm: None,
+            play_time: None,
+            user_description: None,
+            screenshot_keys: None,
+            report_time: "2026-09-07T10:00:00Z".to_string(),
+            log_count: 0,
+            downloaded_at: "2026-09-07T10:00:01Z".to_string(),
+        };
+        cache.save_report(&report, &[]).unwrap();
+
+        assert_eq!(cache.reports_exist(&[]).unwrap(), Vec::<bool>::new());
+        assert_eq!(
+            cache.reports_exist(&["rid-1".into(), "rid-2".into()]).unwrap(),
+            vec![true, false]
+        );
     }
 
     /// 全量清理：远端不存在的本地条目被删；远端列表为空时不动本地（防误清）

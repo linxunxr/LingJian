@@ -19,9 +19,10 @@ use crate::services::downloader;
 use super::dto::{
     AddCommentParams, AnalysisResultDto, AnalyzeReportParams, CloseIssueParams, ErrorAggregateDto,
     GetReportParams, GetScreenshotsParams, IssueActionResultDto, IssueBriefDto, IssueListResult,
-    IssueStatsDto, LevelCountsDto, ListIssuesParams, LogEntryDto, LogFilterDto, QueryLogsParams,
-    QueryLogsResult, RemoteIssueDto, ReopenIssueParams, SyncLatestParams, SyncResultDto,
-    TagCountDto, TimelinePointDto, UpdateLabelsParams,
+    IssueStatsDto, LevelCountsDto, ListIssuesParams, ListRemoteIssuesParams, LogEntryDto,
+    LogFilterDto, QueryLogsParams, QueryLogsResult, RemoteIssueDto, RemoteIssueEntryDto,
+    RemoteIssueListResult, ReopenIssueParams, SyncLatestParams, SyncResultDto, TagCountDto,
+    TimelinePointDto, UpdateLabelsParams,
 };
 
 /// 灵鉴 MCP server。每个 HTTP 会话一个实例，经 AppHandle 共享应用状态。
@@ -580,6 +581,96 @@ impl LingjianServer {
             open: counts.open,
             closed: counts.closed,
             all: counts.all,
+            cached_at,
+        }))
+    }
+
+    /// 每页条数与界面问题列表/SCF 端点一致（github.js PER_PAGE=30）
+    const REMOTE_PER_PAGE: u32 = 30;
+
+    #[tool(
+        name = "list_remote_issues",
+        description = "列出远端反馈 Issue（未处理/已处理/全部，来自本地缓存的全量镜像，与灵鉴界面问题列表同源）。缓存为空时自动同步一次。条目带 downloaded 标记——日志已下载的可直接 analyze_report，未下载的先 sync_latest。要的是已分析过的本地记录用 list_issues",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_remote_issues(
+        &self,
+        Parameters(ListRemoteIssuesParams { state, page }): Parameters<ListRemoteIssuesParams>,
+    ) -> Result<Json<RemoteIssueListResult>, ErrorData> {
+        let (scf_url, api_key) = self.scf_config()?;
+        let cache = self.cache();
+        let client = self.app.state::<crate::AppState>().client.clone();
+
+        let st = match state.as_deref().unwrap_or("open") {
+            "all" => "all",
+            "closed" => "closed",
+            _ => "open",
+        };
+        let pg = page.unwrap_or(1).max(1);
+
+        // 缓存为空（首次使用）时同步一次，避免返回空列表误导；
+        // 与 issue_stats 同策略：同步失败不阻断，计数/列表本来就是尽力而为
+        let ensure = {
+            let c = cache.clone();
+            let s = st.to_string();
+            tauri::async_runtime::spawn_blocking(move || c.list_issues(&s, 1, 1))
+                .await
+                .map_err(|e| ErrorData::internal_error(format!("查询任务失败: {e}"), None))?
+                .map_err(|e| ErrorData::internal_error(format!("读取 Issue 缓存失败: {e}"), None))?
+        };
+        if ensure.0.is_empty() {
+            let _ = crate::commands::issue::sync_cache_incremental(&scf_url, &api_key, &client, &cache).await;
+        }
+
+        let (items, has_more) = {
+            let c = cache.clone();
+            let s = st.to_string();
+                tauri::async_runtime::spawn_blocking(move || c.list_issues(&s, pg, Self::REMOTE_PER_PAGE))
+                .await
+                .map_err(|e| ErrorData::internal_error(format!("查询任务失败: {e}"), None))?
+                .map_err(|e| ErrorData::internal_error(format!("读取 Issue 缓存失败: {e}"), None))?
+        };
+        let cached_at = {
+            let c = cache.clone();
+            tauri::async_runtime::spawn_blocking(move || c.issues_cached_at())
+                .await
+                .map_err(|e| ErrorData::internal_error(format!("查询任务失败: {e}"), None))?
+                .map_err(|e| ErrorData::internal_error(format!("查询缓存时间失败: {e}"), None))?
+        };
+        // 批量标记日志下载状态（已下载的才能 analyze_report）
+        let downloaded = {
+            let c = cache.clone();
+            let rids: Vec<String> = items.iter().map(|i| i.report_id.clone()).collect();
+            tauri::async_runtime::spawn_blocking(move || c.reports_exist(&rids))
+                .await
+                .map_err(|e| ErrorData::internal_error(format!("查询任务失败: {e}"), None))?
+                .map_err(|e| ErrorData::internal_error(format!("查询下载状态失败: {e}"), None))?
+        };
+
+        let issues = items
+            .into_iter()
+            .zip(downloaded)
+            .map(|(i, dl)| RemoteIssueEntryDto {
+                number: i.number,
+                report_id: i.report_id,
+                title: i.title,
+                state: i.state,
+                issue_url: i.issue_url,
+                created_at: i.created_at,
+                labels: i.labels,
+                app_version: i.app_version,
+                platform: i.platform,
+                realm: i.realm,
+                player_id: i.player_id,
+                player_name: i.player_name,
+                downloaded: dl,
+            })
+            .collect();
+
+        Ok(Json(RemoteIssueListResult {
+            issues,
+            page: pg,
+            has_more,
             cached_at,
         }))
     }
