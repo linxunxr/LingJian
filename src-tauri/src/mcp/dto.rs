@@ -269,6 +269,18 @@ pub struct QueryLogsResult {
 
 // ===== 二期：同步与写操作（需设置页开启"允许写操作"，sync_latest 除外） =====
 
+/// sync_latest 入参
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncLatestParams {
+    /// 下载哪个状态的缺失日志：open（默认）/ closed / all
+    #[serde(default)]
+    pub state: Option<String>,
+    /// 是否下载本地缺失的日志（默认 true；false 时仅增量刷新列表缓存镜像）
+    #[serde(default)]
+    pub download: Option<bool>,
+}
+
 /// SCF 侧 Issue 列表条目
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

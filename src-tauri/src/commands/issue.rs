@@ -384,37 +384,24 @@ pub struct DownloadMissingResult {
     pub failed: Vec<String>,
 }
 
-/// 下载缺失日志（软件本体的下载入口，MCP 侧不再承担下载职责）。
+/// 同步并下载缺失日志的公共实现（界面「⇩ 日志」按钮与 MCP sync_latest 共用）。
 ///
-/// 先增量同步 issue_list 缓存镜像，再逐条下载本地没有日志的 Issue：
-/// 先解析完整元信息（用户反馈/游玩时长仅 /issue/:number 端点返回），
-/// 失败则降级用列表信息落库。默认只处理 open（未处理）——已处理的
-/// 反馈通常无需再分析；需要全量补下载时传 all。
-#[tauri::command]
-pub async fn download_missing_reports(
-    state: Option<String>,
-    scf_url: String,
-    api_key: String,
-    http: State<'_, crate::AppState>,
+/// 先增量同步 issue_list 缓存镜像，再分页遍历目标状态的 Issue，逐条下载
+/// 本地没有的日志：先解析完整元信息（用户反馈/游玩时长仅 /issue/:number
+/// 端点返回），失败则降级用列表信息落库。
+pub async fn sync_and_download(
+    st: &str,
+    scf_url: &str,
+    api_key: &str,
+    client: &reqwest::Client,
+    cache: &Arc<Cache>,
+    cache_dir: &std::path::Path,
 ) -> Result<DownloadMissingResult, String> {
     use crate::models::report::Report;
 
-    if scf_url.trim().is_empty() || api_key.trim().is_empty() {
-        return Err("未配置 SCF 端点，请先到设置页填写".to_string());
-    }
-    let st = match state.as_deref().unwrap_or("open") {
-        "all" => "all",
-        "closed" => "closed",
-        _ => "open",
-    };
-    let cache: Arc<Cache> = http.cache.clone();
-    let client = http.client.clone();
-    let cache_dir = http.cache_dir.clone();
-
     // 先把缓存镜像同步到最新（增量，稳态一页）
-    sync_issues_to_cache(&scf_url, &api_key, &client, &cache, SyncMode::Incremental).await?;
+    sync_issues_to_cache(scf_url, api_key, client, cache, SyncMode::Incremental).await?;
 
-    // 分页遍历缓存镜像中目标状态的 Issue，下载本地缺失的日志
     let mut downloaded = 0usize;
     let mut skipped = 0usize;
     let mut failed: Vec<String> = Vec::new();
@@ -447,7 +434,7 @@ pub async fn download_missing_reports(
                 continue;
             }
 
-            let info = downloader::resolve_issue(&scf_url, item.number, &api_key, &client)
+            let info = downloader::resolve_issue(scf_url, item.number, api_key, client)
                 .await
                 .ok();
             let report_id = info
@@ -455,7 +442,7 @@ pub async fn download_missing_reports(
                 .map(|i| i.report_id.clone())
                 .unwrap_or_else(|| item.report_id.clone());
 
-            match downloader::download(&scf_url, &report_id, &api_key, &client, &cache_dir).await {
+            match downloader::download(scf_url, &report_id, api_key, client, cache_dir).await {
                 Ok((entries, _size)) => {
                     let now = chrono::Utc::now().to_rfc3339();
                     let report = Report {
@@ -511,6 +498,36 @@ pub async fn download_missing_reports(
         skipped,
         failed,
     })
+}
+
+/// 下载缺失日志（界面「⇩ 日志」按钮入口）。
+///
+/// 默认只处理 open（未处理）——已处理的反馈通常无需再分析；
+/// 需要全量补下载时传 all。
+#[tauri::command]
+pub async fn download_missing_reports(
+    state: Option<String>,
+    scf_url: String,
+    api_key: String,
+    http: State<'_, crate::AppState>,
+) -> Result<DownloadMissingResult, String> {
+    if scf_url.trim().is_empty() || api_key.trim().is_empty() {
+        return Err("未配置 SCF 端点，请先到设置页填写".to_string());
+    }
+    let st = match state.as_deref().unwrap_or("open") {
+        "all" => "all",
+        "closed" => "closed",
+        _ => "open",
+    };
+    sync_and_download(
+        st,
+        &scf_url,
+        &api_key,
+        &http.client,
+        &http.cache,
+        &http.cache_dir,
+    )
+    .await
 }
 
 /// 判断输入是否为纯 reportId（供前端决定是否跳过 Issue 解析）

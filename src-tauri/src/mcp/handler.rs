@@ -21,8 +21,8 @@ use super::dto::{
     GetReportParams, GetScreenshotsParams, IssueActionResultDto, IssueBriefDto, IssueListResult,
     IssueStatsDto, LevelCountsDto, ListIssuesParams, ListRemoteIssuesParams, LogEntryDto,
     LogFilterDto, QueryLogsParams, QueryLogsResult, RemoteIssueDto, RemoteIssueEntryDto,
-    RemoteIssueListResult, ReopenIssueParams, SyncResultDto, TagCountDto, TimelinePointDto,
-    UpdateLabelsParams,
+    RemoteIssueListResult, ReopenIssueParams, SyncLatestParams, SyncResultDto, TagCountDto,
+    TimelinePointDto, UpdateLabelsParams,
 };
 
 /// 灵鉴 MCP server。每个 HTTP 会话一个实例，经 AppHandle 共享应用状态。
@@ -412,18 +412,41 @@ impl LingjianServer {
 
     #[tool(
         name = "sync_latest",
-        description = "增量刷新远端 Issue 列表的本地缓存镜像（不下载日志）。日志下载归灵鉴软件本体：请用户在界面「问题列表 → 下载缺失日志」操作，或经本工具提示后由用户手动触发。与列表/计数工具读取同一份缓存",
+        description = "从 SCF 同步最新数据到本地（与灵鉴界面「⇩ 日志」按钮同一入口）：先增量刷新 Issue 列表缓存镜像，再下载本地缺失的日志（download=false 跳过下载）。默认只下载 open（未处理），需要补全量传 all。同步后 list_remote_issues/issue_stats/list_issues 即为最新。仅写本地库，不改动 GitHub Issue",
         annotations(read_only_hint = true)
     )]
-    async fn sync_latest(&self) -> Result<Json<SyncResultDto>, ErrorData> {
+    async fn sync_latest(
+        &self,
+        Parameters(SyncLatestParams { state, download }): Parameters<SyncLatestParams>,
+    ) -> Result<Json<SyncResultDto>, ErrorData> {
         let (scf_url, api_key) = self.scf_config()?;
         let cache = self.cache();
-        let client = self.app.state::<crate::AppState>().client.clone();
+        let app_state = self.app.state::<crate::AppState>();
+        let client = app_state.client.clone();
+        let cache_dir = app_state.cache_dir.clone();
 
-        crate::commands::issue::sync_cache_incremental(&scf_url, &api_key, &client, &cache)
-            .await
-            .map_err(|e| ErrorData::internal_error(format!("同步缓存失败: {e}"), None))?;
+        let st = match state.as_deref().unwrap_or("open") {
+            "all" => "all",
+            "closed" => "closed",
+            _ => "open",
+        };
 
+        let result = if download.unwrap_or(true) {
+            crate::commands::issue::sync_and_download(st, &scf_url, &api_key, &client, &cache, &cache_dir)
+                .await
+                .map_err(|e| ErrorData::internal_error(format!("同步失败: {e}"), None))?
+        } else {
+            crate::commands::issue::sync_cache_incremental(&scf_url, &api_key, &client, &cache)
+                .await
+                .map_err(|e| ErrorData::internal_error(format!("同步缓存失败: {e}"), None))?;
+            crate::commands::issue::DownloadMissingResult {
+                downloaded: 0,
+                skipped: 0,
+                failed: Vec::new(),
+            }
+        };
+
+        // 返回同步后的最新一页（与界面同源），供 AI 直接看当前反馈
         let (items, _has_more) = {
             let c = cache.clone();
             tauri::async_runtime::spawn_blocking(move || c.list_issues("all", 1, 30))
@@ -445,15 +468,15 @@ impl LingjianServer {
                 })
                 .collect(),
             has_more: false,
-            downloaded: 0,
-            skipped: 0,
-            failed: Vec::new(),
+            downloaded: result.downloaded,
+            skipped: result.skipped,
+            failed: result.failed,
         }))
     }
 
     #[tool(
         name = "issue_stats",
-        description = "查询各状态的用户反馈 Issue 数量（未处理 open / 已处理 closed / 全部 all，来自本地缓存镜像，与灵鉴界面问题列表同源，不实时回源）。需要更新数据请先调 sync_latest 刷新镜像，或在灵鉴界面刷新",
+        description = "查询各状态的用户反馈 Issue 数量（未处理 open / 已处理 closed / 全部 all，来自本地缓存镜像，与灵鉴界面问题列表同源，不实时回源）。数据不是最新的话先调 sync_latest 同步",
         annotations(read_only_hint = true)
     )]
     async fn issue_stats(&self) -> Result<Json<IssueStatsDto>, ErrorData> {
@@ -488,7 +511,7 @@ impl LingjianServer {
 
     #[tool(
         name = "list_remote_issues",
-        description = "列出远端反馈 Issue（未处理/已处理/全部，来自本地缓存镜像，与灵鉴界面问题列表同源，不实时回源）。条目带 downloaded 标记——日志已下载的可直接 analyze_report；未下载的提示用户在灵鉴界面「下载缺失日志」（日志下载归软件本体，MCP 不下载）。要的是已分析过的本地记录用 list_issues；缓存为空先调 sync_latest",
+        description = "列出远端反馈 Issue（未处理/已处理/全部，来自本地缓存镜像，与灵鉴界面问题列表同源，不实时回源）。条目带 downloaded 标记——日志已下载的可直接 analyze_report；未下载的调 sync_latest 同步（会下载缺失日志）。要的是已分析过的本地记录用 list_issues",
         annotations(read_only_hint = true)
     )]
     async fn list_remote_issues(
@@ -615,6 +638,6 @@ impl LingjianServer {
 // get_info 由 #[tool_handler] 生成，名称/引导语在此定制（version 宏属性不支持表达式，用默认值）
 #[tool_handler(
     name = "lingjian",
-    instructions = "灵鉴（LingJian）日志分析工具。先用 list_issues 看已下载的上报（sync_latest 可从 SCF 同步新上报），analyze_report 获取错误聚合与统计，query_logs 分页查看原始日志；分析定位后回写处理结果：close_issue 传 fixed_in 版本号即走完整关单流程（关闭+版本标签+解决评论，与灵鉴界面一致），另有 add_comment / update_labels / reopen_issue（写操作需灵鉴设置页开启「允许写操作」）。"
+    instructions = "灵鉴（LingJian）日志分析工具。先用 issue_stats 看处理进度、list_remote_issues 看远端反馈（数据来自本地缓存），需要最新数据或日志未下载时调 sync_latest 同步（列表 + 缺失日志）；analyze_report 获取错误聚合与统计，query_logs 分页查看原始日志，list_issues/get_report 查本地已有上报；分析定位后回写处理结果：close_issue 传 fixed_in 版本号即走完整关单流程（关闭+版本标签+解决评论，与灵鉴界面一致），另有 add_comment / update_labels / reopen_issue（写操作需灵鉴设置页开启「允许写操作」）。"
 )]
 impl ServerHandler for LingjianServer {}
