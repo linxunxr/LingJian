@@ -102,6 +102,38 @@ describe('loadLeaderboard 聚合', () => {
   })
 })
 
+describe('loadLeaderboard 同步模式', () => {
+  it('默认增量：page=1 传 refresh=true + syncMode=incremental，后续页不传 refresh', async () => {
+    mockPages([
+      [issue({ number: 1, playerId: 'steam:111' })],
+    ])
+
+    await loadLeaderboard()
+
+    const first = mockedInvoke.mock.calls[0][1] as Record<string, unknown>
+    expect(first.refresh).toBe(true)
+    expect(first.syncMode).toBe('incremental')
+    expect(mockedInvoke).toHaveBeenCalledTimes(1)
+  })
+
+  it('全量模式：syncMode=full，进行中 fullSyncing=true，完成后记录 lastFullSyncAt', async () => {
+    mockPages([
+      [issue({ number: 1, playerId: 'steam:111' })],
+    ])
+
+    const promise = loadLeaderboard({ mode: 'full' })
+    // 发起后立即检查进行中状态（fetchAllIssues 至少一个微任务才完成）
+    expect(useLeaderboard().state.fullSyncing).toBe(true)
+    await promise
+
+    const first = mockedInvoke.mock.calls[0][1] as Record<string, unknown>
+    expect(first.syncMode).toBe('full')
+    const { state } = useLeaderboard()
+    expect(state.fullSyncing).toBe(false)
+    expect(state.lastFullSyncAt).not.toBeNull()
+  })
+})
+
 describe('buildLeaderboardCsv', () => {
   it('含表头、BOM、未标识尾行，含逗号的昵称加引号转义', () => {
     const csv = buildLeaderboardCsv(

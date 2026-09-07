@@ -44,6 +44,10 @@ interface LeaderboardState {
   loadedAt: string | null
   /** 回源失败降级用缓存聚合时的错误说明（数据可能不完整，非 null 时页面提示） */
   degradedError: string | null
+  /** 全量同步进行中（拉远端全部页 + 清理远端已删除的条目，比普通刷新慢） */
+  fullSyncing: boolean
+  /** 最近一次全量同步完成时间（ISO 8601），展示"上次全量同步"用 */
+  lastFullSyncAt: string | null
 }
 
 const state = reactive<LeaderboardState>({
@@ -54,15 +58,17 @@ const state = reactive<LeaderboardState>({
   unidentified: 0,
   loadedAt: null,
   degradedError: null,
+  fullSyncing: false,
+  lastFullSyncAt: null,
 })
 
 /** 拉全量分页上限（30 条/页 × 50 页 = 1500 条），防御 SCF hasMore 异常导致的死循环 */
 const MAX_PAGES = 50
 
 /** 循环拉取 state=all 的全部 Issue 列表（排行榜数据源，不依赖日志下载）。
- *  page=1 强制回源：排行榜要求全量准确（含已关闭反馈），且缓存可能只有
- *  open 状态的旧数据（v0.5.2 的缓存按请求状态分家同步的遗留）；后续页读本地库。 */
-async function fetchAllIssues(): Promise<IssueListItem[]> {
+ *  page=1 增量回源：以缓存内最新上报时间为水位线，稳态只拉一页新数据，
+ *  已有 Issue 的状态变更由本页覆盖；空缓存时自动退化为全量。后续页读本地库。 */
+async function fetchAllIssues(mode: 'incremental' | 'full'): Promise<IssueListItem[]> {
   const all: IssueListItem[] = []
   let degraded: string | null = null
   for (let page = 1; page <= MAX_PAGES; page++) {
@@ -70,6 +76,7 @@ async function fetchAllIssues(): Promise<IssueListItem[]> {
       state: 'all',
       page,
       refresh: page === 1,
+      syncMode: page === 1 ? mode : 'incremental',
       scfUrl: settings.scfUrl,
       apiKey: settings.apiKey,
     })
@@ -86,18 +93,23 @@ async function fetchAllIssues(): Promise<IssueListItem[]> {
  * 加载并聚合排行榜。
  * 按 playerId 聚合（steam:SteamID64 发奖凭据 / device:UUID 兜底），
  * 无 playerId 的老 Issue 不进排行，单独计入 unidentified。
+ *
+ * @param opts.mode 'incremental'（默认）只补新数据；'full' 拉远端全部页
+ *   并清理远端已删除的条目（同步慢，配 fullSyncing 状态区分按钮文案）
  */
-export async function loadLeaderboard(): Promise<void> {
+export async function loadLeaderboard(opts?: { mode?: 'incremental' | 'full' }): Promise<void> {
   if (!settings.scfUrl.trim() || !settings.apiKey.trim()) {
     state.error = '未配置 SCF 端点，请先到设置页填写'
     return
   }
 
+  const mode = opts?.mode ?? 'incremental'
   state.loading = true
+  state.fullSyncing = mode === 'full'
   state.error = null
 
   try {
-    const issues = await fetchAllIssues()
+    const issues = await fetchAllIssues(mode)
     const byPlayer = new Map<string, MutableEntry>()
 
     // 按创建时间正序聚合，保证 firstAt/versions 顺序稳定
@@ -138,10 +150,12 @@ export async function loadLeaderboard(): Promise<void> {
     state.loadedAt = issues.length > 0
       ? issues.reduce((max, i) => (i.createdAt > max ? i.createdAt : max), issues[0].createdAt)
       : null
+    if (mode === 'full') state.lastFullSyncAt = new Date().toISOString()
   } catch (e) {
     state.error = typeof e === 'string' ? e : String(e)
   } finally {
     state.loading = false
+    state.fullSyncing = false
   }
 }
 
