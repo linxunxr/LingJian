@@ -2,10 +2,19 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use rusqlite::{params, Connection};
+use serde::Serialize;
 
 use crate::models::log_entry::{LogEntry, LogLevel};
 use crate::models::report::Report;
 use crate::services::github::IssueListItem;
+
+/// issue_list 缓存按 state 的计数（open/closed 实存，all 为两者之和）
+#[derive(Debug, Default, Clone, Copy, Serialize)]
+pub struct IssueCounts {
+    pub open: u32,
+    pub closed: u32,
+    pub all: u32,
+}
 
 /// SQLite 缓存，持有连接（内部可变，跨线程共享）
 pub struct Cache {
@@ -322,6 +331,30 @@ impl Cache {
             })
             .map_err(|e| format!("查询失败: {e}"))?;
         Ok(latest)
+    }
+
+    /// 各状态的 Issue 缓存计数（问题列表 tab 徽标用）。
+    /// open/closed 为实际值，all 为两者之和（库内不存"all"状态）。
+    pub fn count_issues_by_state(&self) -> Result<IssueCounts, String> {
+        let conn = self.conn.lock().map_err(|e| format!("数据库锁失败: {e}"))?;
+        let mut stmt = conn
+            .prepare("SELECT state, COUNT(*) FROM issue_list GROUP BY state")
+            .map_err(|e| format!("查询预编译失败: {e}"))?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+            .map_err(|e| format!("查询失败: {e}"))?;
+
+        let mut counts = IssueCounts::default();
+        for r in rows {
+            let (state, n) = r.map_err(|e| format!("读取行失败: {e}"))?;
+            match state.as_str() {
+                "open" => counts.open = n as u32,
+                "closed" => counts.closed = n as u32,
+                _ => {}
+            }
+        }
+        counts.all = counts.open + counts.closed;
+        Ok(counts)
     }
 
     /// 全量同步收尾：删除本地库中已不在远端的 Issue（远端被删/误同步的脏数据）。
@@ -757,6 +790,48 @@ mod tests {
             cache.latest_issue_created_at().unwrap().as_deref(),
             Some("2026-09-05T10:00:00Z")
         );
+    }
+
+    /// 各状态计数：open/closed 实存值，all 为两者之和；未知状态忽略
+    #[test]
+    fn count_issues_by_state_sums() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::open(&dir.path().join("counts.db")).unwrap();
+
+        let item = |n: u32, state: &str| IssueListItem {
+            number: n,
+            report_id: format!("rid-{n}"),
+            title: format!("问题{n}"),
+            state: state.to_string(),
+            issue_url: format!("https://github.com/o/r/issues/{n}"),
+            created_at: format!("2026-09-0{n}T10:00:00Z"),
+            owner: "o".to_string(),
+            repo: "r".to_string(),
+            app_version: None,
+            platform: None,
+            realm: None,
+            labels: None,
+            player_id: None,
+            player_name: None,
+        };
+
+        // 空库全 0
+        assert_eq!(cache.count_issues_by_state().unwrap().all, 0);
+
+        cache
+            .upsert_issues(&[
+                item(1, "open"),
+                item(2, "open"),
+                item(3, "closed"),
+            ])
+            .unwrap();
+        let c = cache.count_issues_by_state().unwrap();
+        assert_eq!((c.open, c.closed, c.all), (2, 1, 3));
+
+        // upsert 改状态后计数跟随（#1 关闭）
+        cache.upsert_issues(&[item(1, "closed")]).unwrap();
+        let c = cache.count_issues_by_state().unwrap();
+        assert_eq!((c.open, c.closed, c.all), (1, 2, 3));
     }
 
     /// 全量清理：远端不存在的本地条目被删；远端列表为空时不动本地（防误清）

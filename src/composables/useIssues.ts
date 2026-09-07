@@ -9,6 +9,13 @@ type IssueState = 'open' | 'closed' | 'all'
 /** 预设标签（一期硬编码，后续可配置化；IssueList 与 AnalyzeView 共用） */
 export const PRESET_LABELS = ['已修复', '无法复现', '高优先级', '待验证'] as const
 
+/** 各状态 Issue 数（tab 徽标；all = open + closed） */
+export interface IssueCounts {
+  open: number
+  closed: number
+  all: number
+}
+
 interface IssuesState {
   /** 当前列表（跨页累积） */
   issues: IssueListItem[]
@@ -31,6 +38,8 @@ interface IssuesState {
   fromCache: boolean
   /** 缓存最近一次回源时间（ISO 8601；展示"更新于 X 前"用） */
   cachedAt: string | null
+  /** 各状态 Issue 数（tab 徽标；null = 尚未加载） */
+  counts: IssueCounts | null
 }
 
 const state = reactive<IssuesState>({
@@ -46,6 +55,7 @@ const state = reactive<IssuesState>({
   actionError: null,
   fromCache: false,
   cachedAt: null,
+  counts: null,
 })
 
 /** 重置列表到初始状态（切换 tab / 手动刷新时用） */
@@ -54,6 +64,15 @@ function resetList() {
   state.page = 0
   state.hasMore = false
   state.loaded = false
+}
+
+/** 刷新各状态 Issue 计数（tab 徽标；失败静默——徽标缺失不影响主流程） */
+export async function refreshCounts(): Promise<void> {
+  try {
+    state.counts = await invoke<IssueCounts>('issue_counts')
+  } catch {
+    // 计数是辅助信息，失败保持旧值
+  }
 }
 
 /**
@@ -89,6 +108,8 @@ export async function loadIssues(opts?: { refresh?: boolean }): Promise<void> {
     state.fromCache = !!result.fromCache
     state.cachedAt = result.cachedAt ?? null
     state.loaded = true
+    // 计数与列表并行无依赖，放 finally 前单独拉，失败不掩盖列表结果
+    void refreshCounts()
   } catch (e) {
     state.error = typeof e === 'string' ? e : String(e)
   } finally {
@@ -163,6 +184,8 @@ export async function actOnIssue(
       if (typeof result.state === 'string') item.state = result.state
       if (Array.isArray(result.labels)) item.labels = result.labels
     }
+    // 关闭/重开改变了 open/closed 计数，同步刷新徽标
+    if (typeof result.state === 'string') void refreshCounts()
     return true
   } catch (e) {
     state.actionError = typeof e === 'string' ? e : String(e)
@@ -177,6 +200,25 @@ export function clearActionError() {
   state.actionError = null
 }
 
+/** 重置状态到初始（测试用；运行时状态是模块级单例，跨用例需显式清理） */
+export function resetIssuesState() {
+  Object.assign(state, {
+    issues: [],
+    loading: false,
+    loadingMore: false,
+    error: null,
+    state: 'open' as IssueState,
+    page: 0,
+    hasMore: false,
+    loaded: false,
+    actingNumber: null,
+    actionError: null,
+    fromCache: false,
+    cachedAt: null,
+    counts: null,
+  })
+}
+
 export function useIssues() {
   return {
     state: readonly(state),
@@ -185,5 +227,6 @@ export function useIssues() {
     loadMore,
     actOnIssue,
     clearActionError,
+    refreshCounts,
   }
 }

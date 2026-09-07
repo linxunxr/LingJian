@@ -84,6 +84,17 @@ async fn fetch_page_with_warmup(
     }
 }
 
+/// 增量同步缓存的公开入口（MCP issue_stats 等跨模块调用；
+/// commands 内部直接用 [`sync_issues_to_cache`]）
+pub async fn sync_cache_incremental(
+    scf_url: &str,
+    api_key: &str,
+    http: &reqwest::Client,
+    cache: &Arc<Cache>,
+) -> Result<(), String> {
+    sync_issues_to_cache(scf_url, api_key, http, cache, SyncMode::Incremental).await
+}
+
 /// 拉取远端列表并落库。
 ///
 /// state 固定拉 "all"：缓存是全量镜像，open/closed 筛选在查询侧做——
@@ -348,6 +359,17 @@ pub async fn act_on_issue(
     }
 
     Ok(result)
+}
+
+/// 各状态 Issue 缓存计数（问题列表 tab 徽标；open/closed 实存，all 为两者之和）
+#[tauri::command]
+pub async fn issue_counts(
+    http: State<'_, crate::AppState>,
+) -> Result<crate::services::cache::IssueCounts, String> {
+    let cache: Arc<Cache> = http.cache.clone();
+    tauri::async_runtime::spawn_blocking(move || cache.count_issues_by_state())
+        .await
+        .map_err(|e| format!("查询任务失败: {e}"))?
 }
 
 /// 判断输入是否为纯 reportId（供前端决定是否跳过 Issue 解析）

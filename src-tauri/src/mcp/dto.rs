@@ -311,6 +311,20 @@ pub struct SyncResultDto {
     pub failed: Vec<String>,
 }
 
+/// issue_stats 返回：各状态的上报 Issue 数（读本地缓存，缓存为空时工具内先同步一次）
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueStatsDto {
+    /// 未处理（open）数量
+    pub open: u32,
+    /// 已处理（closed）数量
+    pub closed: u32,
+    /// 全部数量（open + closed）
+    pub all: u32,
+    /// 缓存最近一次回源时间（ISO 8601；同步失败时可能仍是旧数据的时间）
+    pub cached_at: Option<String>,
+}
+
 /// add_comment 入参
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

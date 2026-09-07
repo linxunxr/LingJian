@@ -87,21 +87,21 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
           :disabled="state.loading"
           @click="switchState('open')"
         >
-          未处理
+          未处理<span v-if="state.counts" class="tab-count">{{ state.counts.open }}</span>
         </button>
         <button
           :class="['tab', { active: state.state === 'closed' }]"
           :disabled="state.loading"
           @click="switchState('closed')"
         >
-          已处理
+          已处理<span v-if="state.counts" class="tab-count">{{ state.counts.closed }}</span>
         </button>
         <button
           :class="['tab', { active: state.state === 'all' }]"
           :disabled="state.loading"
           @click="switchState('all')"
         >
-          全部
+          全部<span v-if="state.counts" class="tab-count">{{ state.counts.all }}</span>
         </button>
         <button
           class="refresh-btn"
@@ -264,6 +264,14 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
   background-color: var(--color-primary);
   border-color: var(--color-primary);
   color: #fff;
+}
+
+/* tab 数量徽标：active 时反白，非 active 时弱化 */
+.tab-count {
+  margin-left: 0.375rem;
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
 }
 
 .tab:disabled {

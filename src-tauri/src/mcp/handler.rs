@@ -19,9 +19,9 @@ use crate::services::downloader;
 use super::dto::{
     AddCommentParams, AnalysisResultDto, AnalyzeReportParams, CloseIssueParams, ErrorAggregateDto,
     GetReportParams, GetScreenshotsParams, IssueActionResultDto, IssueBriefDto, IssueListResult,
-    LevelCountsDto, ListIssuesParams, LogEntryDto, LogFilterDto, QueryLogsParams, QueryLogsResult,
-    RemoteIssueDto, ReopenIssueParams, SyncLatestParams, SyncResultDto, TagCountDto,
-    TimelinePointDto, UpdateLabelsParams,
+    IssueStatsDto, LevelCountsDto, ListIssuesParams, LogEntryDto, LogFilterDto, QueryLogsParams,
+    QueryLogsResult, RemoteIssueDto, ReopenIssueParams, SyncLatestParams, SyncResultDto,
+    TagCountDto, TimelinePointDto, UpdateLabelsParams,
 };
 
 /// 灵鉴 MCP server。每个 HTTP 会话一个实例，经 AppHandle 共享应用状态。
@@ -536,6 +536,51 @@ impl LingjianServer {
             downloaded,
             skipped,
             failed,
+        }))
+    }
+
+    #[tool(
+        name = "issue_stats",
+        description = "查询各状态的用户反馈 Issue 数量（未处理 open / 已处理 closed / 全部 all，来自本地缓存）。缓存为空时自动从 SCF 同步一次；需要最新数据可先调 sync_latest 或在灵鉴界面刷新",
+        annotations(read_only_hint = true)
+    )]
+    async fn issue_stats(&self) -> Result<Json<IssueStatsDto>, ErrorData> {
+        let (scf_url, api_key) = self.scf_config()?;
+        let cache = self.cache();
+        let client = self.app.state::<crate::AppState>().client.clone();
+
+        // 缓存为空（首次使用/换库）时同步一次再读，避免返回全 0 误导；
+        // 同步失败不阻断——计数本来就是尽力而为的统计信息
+        let counts = {
+            let c = cache.clone();
+            let empty = tauri::async_runtime::spawn_blocking(move || {
+                c.count_issues_by_state().map(|n| n.all == 0)
+            })
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("查询任务失败: {e}"), None))?
+            .map_err(|e| ErrorData::internal_error(format!("查询 Issue 计数失败: {e}"), None))?;
+            if empty {
+                let _ = crate::commands::issue::sync_cache_incremental(&scf_url, &api_key, &client, &cache).await;
+            }
+            let c = cache.clone();
+            tauri::async_runtime::spawn_blocking(move || c.count_issues_by_state())
+                .await
+                .map_err(|e| ErrorData::internal_error(format!("查询任务失败: {e}"), None))?
+                .map_err(|e| ErrorData::internal_error(format!("查询 Issue 计数失败: {e}"), None))?
+        };
+        let cached_at = {
+            let c = cache.clone();
+            tauri::async_runtime::spawn_blocking(move || c.issues_cached_at())
+                .await
+                .map_err(|e| ErrorData::internal_error(format!("查询任务失败: {e}"), None))?
+                .map_err(|e| ErrorData::internal_error(format!("查询缓存时间失败: {e}"), None))?
+        };
+
+        Ok(Json(IssueStatsDto {
+            open: counts.open,
+            closed: counts.closed,
+            all: counts.all,
+            cached_at,
         }))
     }
 
