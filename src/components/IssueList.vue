@@ -12,7 +12,7 @@ const emit = defineEmits<{
   select: [number: string]
 }>()
 
-const { state, loadIssues, switchState, loadMore, actOnIssue, clearActionError } = useIssues()
+const { state, loadIssues, switchState, loadMore, actOnIssue, clearActionError, downloadMissing } = useIssues()
 
 /** SCF 端点是否已配置（未配置时列表区显示引导空态，而非整块空白） */
 const configured = computed(() => isSettingsComplete())
@@ -105,14 +105,25 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
         </button>
         <button
           class="refresh-btn"
-          :disabled="state.loading"
+          :disabled="state.loading || state.downloading"
           @click="loadIssues({ refresh: true })"
           title="刷新（回源拉取最新列表）"
         >
           ↻
         </button>
+        <button
+          class="refresh-btn download-btn"
+          :disabled="state.loading || state.downloading"
+          :title="'下载本地还没有的反馈日志（当前 tab 状态），下载后可直接分析；MCP/AI 读取的就是这份本地数据'"
+          @click="downloadMissing"
+        >
+          {{ state.downloading ? '下载中…' : '⇩ 日志' }}
+        </button>
       </div>
     </div>
+
+    <!-- 下载缺失日志结果提示（短暂展示） -->
+    <div v-if="state.downloadResult" class="download-tip">{{ state.downloadResult }}</div>
 
     <!-- 操作错误提示（独立于列表加载错误） -->
     <div v-if="state.actionError" class="action-error">
@@ -299,6 +310,22 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
 .refresh-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* 下载日志按钮带文字，比图标按钮宽 */
+.download-btn {
+  padding: 0.25rem 0.625rem;
+  font-size: 0.75rem;
+}
+
+.download-tip {
+  margin: 0 0 0.75rem;
+  padding: 0.375rem 0.75rem;
+  background-color: rgba(16, 185, 129, 0.08);
+  border: 1px solid var(--color-success);
+  border-radius: var(--radius-md);
+  color: var(--color-success);
+  font-size: 0.75rem;
 }
 
 .issue-list {

@@ -8,7 +8,7 @@ vi.mock('./useSettings', async importOriginal => {
   return { ...mod, settings: { scfUrl: 'http://scf.test', apiKey: 'key' } }
 })
 
-import { actOnIssue, loadIssues, refreshCounts, resetIssuesState, switchState, useIssues } from './useIssues'
+import { actOnIssue, downloadMissing, loadIssues, refreshCounts, resetIssuesState, switchState, useIssues } from './useIssues'
 import type { IssueList, IssueListItem } from '@/types'
 
 const mockedInvoke = vi.mocked(invoke)
@@ -135,5 +135,49 @@ describe('useIssues 计数徽标', () => {
 
     expect(mockedInvoke).toHaveBeenCalledWith('issue_counts')
     expect(useIssues().state.counts).toEqual({ open: 1, closed: 2, all: 3 })
+  })
+})
+
+describe('useIssues 下载缺失日志', () => {
+  it('downloadMissing 传当前 tab 状态，完成后摘要提示并刷新列表', async () => {
+    mockedInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'download_missing_reports') {
+        return { downloaded: 2, skipped: 5, failed: [] }
+      }
+      if (cmd === 'issue_counts') return { open: 3, closed: 5, all: 8 }
+      return page([issue({ number: 44 })])
+    })
+    await switchState('all')
+
+    await downloadMissing()
+
+    expect(mockedInvoke).toHaveBeenCalledWith(
+      'download_missing_reports',
+      expect.objectContaining({ state: 'all' }),
+    )
+    const { state } = useIssues()
+    expect(state.downloading).toBe(false)
+    expect(state.downloadResult).toBe('新下载 2 条，已有 5 条')
+  })
+
+  it('下载有失败条目时摘要带失败数，错误则写错误提示', async () => {
+    mockedInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'download_missing_reports') {
+        return { downloaded: 1, skipped: 0, failed: ['#12: 下载失败 timeout'] }
+      }
+      if (cmd === 'issue_counts') return { open: 1, closed: 0, all: 1 }
+      return page([])
+    })
+
+    await downloadMissing()
+    expect(useIssues().state.downloadResult).toBe('新下载 1 条，已有 0 条，失败 1 条')
+
+    mockedInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'download_missing_reports') throw new Error('scf down')
+      return page([])
+    })
+    await downloadMissing()
+    expect(useIssues().state.downloadResult).toContain('scf down')
+    expect(useIssues().state.downloading).toBe(false)
   })
 })

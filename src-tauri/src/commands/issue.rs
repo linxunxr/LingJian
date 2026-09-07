@@ -372,6 +372,147 @@ pub async fn issue_counts(
         .map_err(|e| format!("查询任务失败: {e}"))?
 }
 
+/// 下载缺失日志的结果（download_missing_reports 返回）
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadMissingResult {
+    /// 本次新下载落库的条数
+    pub downloaded: usize,
+    /// 本地已有跳过的条数
+    pub skipped: usize,
+    /// 下载失败的 issue 编号与原因
+    pub failed: Vec<String>,
+}
+
+/// 下载缺失日志（软件本体的下载入口，MCP 侧不再承担下载职责）。
+///
+/// 先增量同步 issue_list 缓存镜像，再逐条下载本地没有日志的 Issue：
+/// 先解析完整元信息（用户反馈/游玩时长仅 /issue/:number 端点返回），
+/// 失败则降级用列表信息落库。默认只处理 open（未处理）——已处理的
+/// 反馈通常无需再分析；需要全量补下载时传 all。
+#[tauri::command]
+pub async fn download_missing_reports(
+    state: Option<String>,
+    scf_url: String,
+    api_key: String,
+    http: State<'_, crate::AppState>,
+) -> Result<DownloadMissingResult, String> {
+    use crate::models::report::Report;
+
+    if scf_url.trim().is_empty() || api_key.trim().is_empty() {
+        return Err("未配置 SCF 端点，请先到设置页填写".to_string());
+    }
+    let st = match state.as_deref().unwrap_or("open") {
+        "all" => "all",
+        "closed" => "closed",
+        _ => "open",
+    };
+    let cache: Arc<Cache> = http.cache.clone();
+    let client = http.client.clone();
+    let cache_dir = http.cache_dir.clone();
+
+    // 先把缓存镜像同步到最新（增量，稳态一页）
+    sync_issues_to_cache(&scf_url, &api_key, &client, &cache, SyncMode::Incremental).await?;
+
+    // 分页遍历缓存镜像中目标状态的 Issue，下载本地缺失的日志
+    let mut downloaded = 0usize;
+    let mut skipped = 0usize;
+    let mut failed: Vec<String> = Vec::new();
+    let mut page = 1u32;
+    loop {
+        let listed = {
+            let c = cache.clone();
+            let s = st.to_string();
+            tauri::async_runtime::spawn_blocking(move || c.list_issues(&s, page, PER_PAGE))
+                .await
+                .map_err(|e| format!("查询任务失败: {e}"))?
+        };
+        let (items, has_more) = listed?;
+        if items.is_empty() {
+            break;
+        }
+        for item in items {
+            let rid = item.report_id.clone();
+            let exists: bool = {
+                let c = cache.clone();
+                let exists = tauri::async_runtime::spawn_blocking(move || {
+                    c.get_report(&rid).map(|r| r.is_some())
+                })
+                .await
+                .map_err(|e| format!("查询任务失败: {e}"))?;
+                exists?
+            };
+            if exists {
+                skipped += 1;
+                continue;
+            }
+
+            let info = downloader::resolve_issue(&scf_url, item.number, &api_key, &client)
+                .await
+                .ok();
+            let report_id = info
+                .as_ref()
+                .map(|i| i.report_id.clone())
+                .unwrap_or_else(|| item.report_id.clone());
+
+            match downloader::download(&scf_url, &report_id, &api_key, &client, &cache_dir).await {
+                Ok((entries, _size)) => {
+                    let now = chrono::Utc::now().to_rfc3339();
+                    let report = Report {
+                        report_id: report_id.clone(),
+                        issue_number: Some(item.number as i32),
+                        issue_title: Some(item.title.clone()),
+                        app_name: None,
+                        app_version: info
+                            .as_ref()
+                            .and_then(|i| i.app_version.clone())
+                            .or_else(|| item.app_version.clone()),
+                        platform: info
+                            .as_ref()
+                            .and_then(|i| i.platform.clone())
+                            .or_else(|| item.platform.clone()),
+                        realm: info
+                            .as_ref()
+                            .and_then(|i| i.realm.clone())
+                            .or_else(|| item.realm.clone()),
+                        // SCF 的 playTime 为字符串（如 "1234"），落库解析为秒数
+                        play_time: info
+                            .as_ref()
+                            .and_then(|i| i.play_time.as_deref())
+                            .and_then(|s| s.parse::<u64>().ok()),
+                        user_description: info.as_ref().and_then(|i| i.user_description.clone()),
+                        screenshot_keys: info.as_ref().and_then(|i| i.screenshot_keys.clone()),
+                        report_time: now.clone(),
+                        log_count: entries.len(),
+                        downloaded_at: now,
+                    };
+                    let c = cache.clone();
+                    let saved = tauri::async_runtime::spawn_blocking(move || {
+                        c.save_report(&report, &entries)
+                    })
+                    .await
+                    .map_err(|e| format!("落库任务失败: {e}"))?;
+                    match saved {
+                        Ok(()) => downloaded += 1,
+                        Err(e) => failed.push(format!("#{}: 落库失败 {e}", item.number)),
+                    }
+                }
+                Err(e) => failed.push(format!("#{}: 下载失败 {e}", item.number)),
+            }
+        }
+        if !has_more || page >= MAX_SYNC_PAGES {
+            break;
+        }
+        page += 1;
+    }
+
+    Ok(DownloadMissingResult {
+        downloaded,
+        skipped,
+        failed,
+    })
+}
+
 /// 判断输入是否为纯 reportId（供前端决定是否跳过 Issue 解析）
 #[tauri::command]
 pub fn is_report_id_input(input: String) -> bool {

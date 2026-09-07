@@ -21,8 +21,8 @@ use super::dto::{
     GetReportParams, GetScreenshotsParams, IssueActionResultDto, IssueBriefDto, IssueListResult,
     IssueStatsDto, LevelCountsDto, ListIssuesParams, ListRemoteIssuesParams, LogEntryDto,
     LogFilterDto, QueryLogsParams, QueryLogsResult, RemoteIssueDto, RemoteIssueEntryDto,
-    RemoteIssueListResult, ReopenIssueParams, SyncLatestParams, SyncResultDto, TagCountDto,
-    TimelinePointDto, UpdateLabelsParams,
+    RemoteIssueListResult, ReopenIssueParams, SyncResultDto, TagCountDto, TimelinePointDto,
+    UpdateLabelsParams,
 };
 
 /// 灵鉴 MCP server。每个 HTTP 会话一个实例，经 AppHandle 共享应用状态。
@@ -412,157 +412,55 @@ impl LingjianServer {
 
     #[tool(
         name = "sync_latest",
-        description = "从 SCF 拉取远端 Issue 上报列表，并把本地缺失的日志下载落库（已有自动跳过）。仅写本地数据库，不改动 GitHub Issue",
+        description = "增量刷新远端 Issue 列表的本地缓存镜像（不下载日志）。日志下载归灵鉴软件本体：请用户在界面「问题列表 → 下载缺失日志」操作，或经本工具提示后由用户手动触发。与列表/计数工具读取同一份缓存",
         annotations(read_only_hint = true)
     )]
-    async fn sync_latest(
-        &self,
-        Parameters(SyncLatestParams {
-            state,
-            page,
-            download,
-        }): Parameters<SyncLatestParams>,
-    ) -> Result<Json<SyncResultDto>, ErrorData> {
+    async fn sync_latest(&self) -> Result<Json<SyncResultDto>, ErrorData> {
         let (scf_url, api_key) = self.scf_config()?;
-        let st = match state.as_deref().unwrap_or("open") {
-            "all" => "all",
-            "closed" => "closed",
-            _ => "open",
-        };
-        let pg = page.unwrap_or(1).max(1);
-        let do_download = download.unwrap_or(true);
+        let cache = self.cache();
+        let client = self.app.state::<crate::AppState>().client.clone();
 
-        let app_state = self.app.state::<crate::AppState>();
-        let client = app_state.client.clone();
-        let cache = app_state.cache.clone();
-        let cache_dir = app_state.cache_dir.clone();
-
-        let list = downloader::list_issues(&scf_url, st, pg, &api_key, &client)
+        crate::commands::issue::sync_cache_incremental(&scf_url, &api_key, &client, &cache)
             .await
-            .map_err(|e| ErrorData::internal_error(format!("拉取远端列表失败: {e}"), None))?;
+            .map_err(|e| ErrorData::internal_error(format!("同步缓存失败: {e}"), None))?;
 
-        let mut downloaded = 0usize;
-        let mut skipped = 0usize;
-        let mut failed: Vec<String> = Vec::new();
-
-        for item in &list.issues {
-            // 本地已有则跳过
-            let rid = item.report_id.clone();
-            let exists = {
-                let cache = cache.clone();
-                tauri::async_runtime::spawn_blocking(move || cache.get_report(&rid))
-                    .await
-                    .map_err(|e| ErrorData::internal_error(format!("查询任务失败: {e}"), None))?
-                    .map_err(|e| ErrorData::internal_error(format!("查询上报失败: {e}"), None))?
-                    .is_some()
-            };
-            if exists {
-                skipped += 1;
-                continue;
-            }
-            if !do_download {
-                continue;
-            }
-
-            // 先解析完整元信息（用户反馈/游玩时长仅 /issue/:number 端点返回），
-            // 失败则降级用列表信息落库
-            let info = downloader::resolve_issue(&scf_url, item.number, &api_key, &client).await.ok();
-
-            let report_id = info
-                .as_ref()
-                .map(|i| i.report_id.clone())
-                .unwrap_or_else(|| item.report_id.clone());
-
-            match downloader::download(&scf_url, &report_id, &api_key, &client, &cache_dir).await {
-                Ok((entries, _size)) => {
-                    let now = chrono::Utc::now().to_rfc3339();
-                    let report = Report {
-                        report_id: report_id.clone(),
-                        issue_number: Some(item.number as i32),
-                        issue_title: Some(item.title.clone()),
-                        app_name: None,
-                        app_version: info
-                            .as_ref()
-                            .and_then(|i| i.app_version.clone())
-                            .or_else(|| item.app_version.clone()),
-                        platform: info
-                            .as_ref()
-                            .and_then(|i| i.platform.clone())
-                            .or_else(|| item.platform.clone()),
-                        realm: info
-                            .as_ref()
-                            .and_then(|i| i.realm.clone())
-                            .or_else(|| item.realm.clone()),
-                        // SCF 的 playTime 为字符串（如 "1234"），落库解析为秒数
-                        play_time: info
-                            .as_ref()
-                            .and_then(|i| i.play_time.as_deref())
-                            .and_then(|s| s.parse::<u64>().ok()),
-                        user_description: info.as_ref().and_then(|i| i.user_description.clone()),
-                        screenshot_keys: info.as_ref().and_then(|i| i.screenshot_keys.clone()),
-                        report_time: now.clone(),
-                        log_count: entries.len(),
-                        downloaded_at: now,
-                    };
-                    let cache = cache.clone();
-                    let saved = tauri::async_runtime::spawn_blocking(move || {
-                        cache.save_report(&report, &entries)
-                    })
-                    .await
-                    .map_err(|e| ErrorData::internal_error(format!("落库任务失败: {e}"), None))?;
-                    if let Err(e) = saved {
-                        failed.push(format!("#{}: 落库失败 {e}", item.number));
-                    } else {
-                        downloaded += 1;
-                    }
-                }
-                Err(e) => failed.push(format!("#{}: 下载失败 {e}", item.number)),
-            }
-        }
+        let (items, _has_more) = {
+            let c = cache.clone();
+            tauri::async_runtime::spawn_blocking(move || c.list_issues("all", 1, 30))
+                .await
+                .map_err(|e| ErrorData::internal_error(format!("查询任务失败: {e}"), None))?
+                .map_err(|e| ErrorData::internal_error(format!("读取 Issue 缓存失败: {e}"), None))?
+        };
 
         Ok(Json(SyncResultDto {
-            issues: list
-                .issues
-                .iter()
+            issues: items
+                .into_iter()
                 .map(|i| RemoteIssueDto {
                     number: i.number,
-                    report_id: i.report_id.clone(),
-                    title: i.title.clone(),
-                    state: i.state.clone(),
-                    issue_url: i.issue_url.clone(),
-                    created_at: i.created_at.clone(),
+                    report_id: i.report_id,
+                    title: i.title,
+                    state: i.state,
+                    issue_url: i.issue_url,
+                    created_at: i.created_at,
                 })
                 .collect(),
-            has_more: list.has_more,
-            downloaded,
-            skipped,
-            failed,
+            has_more: false,
+            downloaded: 0,
+            skipped: 0,
+            failed: Vec::new(),
         }))
     }
 
     #[tool(
         name = "issue_stats",
-        description = "查询各状态的用户反馈 Issue 数量（未处理 open / 已处理 closed / 全部 all，来自本地缓存）。缓存为空时自动从 SCF 同步一次；需要最新数据可先调 sync_latest 或在灵鉴界面刷新",
+        description = "查询各状态的用户反馈 Issue 数量（未处理 open / 已处理 closed / 全部 all，来自本地缓存镜像，与灵鉴界面问题列表同源，不实时回源）。需要更新数据请先调 sync_latest 刷新镜像，或在灵鉴界面刷新",
         annotations(read_only_hint = true)
     )]
     async fn issue_stats(&self) -> Result<Json<IssueStatsDto>, ErrorData> {
-        let (scf_url, api_key) = self.scf_config()?;
+        let _ = self.scf_config()?;
         let cache = self.cache();
-        let client = self.app.state::<crate::AppState>().client.clone();
 
-        // 缓存为空（首次使用/换库）时同步一次再读，避免返回全 0 误导；
-        // 同步失败不阻断——计数本来就是尽力而为的统计信息
         let counts = {
-            let c = cache.clone();
-            let empty = tauri::async_runtime::spawn_blocking(move || {
-                c.count_issues_by_state().map(|n| n.all == 0)
-            })
-            .await
-            .map_err(|e| ErrorData::internal_error(format!("查询任务失败: {e}"), None))?
-            .map_err(|e| ErrorData::internal_error(format!("查询 Issue 计数失败: {e}"), None))?;
-            if empty {
-                let _ = crate::commands::issue::sync_cache_incremental(&scf_url, &api_key, &client, &cache).await;
-            }
             let c = cache.clone();
             tauri::async_runtime::spawn_blocking(move || c.count_issues_by_state())
                 .await
@@ -590,16 +488,15 @@ impl LingjianServer {
 
     #[tool(
         name = "list_remote_issues",
-        description = "列出远端反馈 Issue（未处理/已处理/全部，来自本地缓存的全量镜像，与灵鉴界面问题列表同源）。缓存为空时自动同步一次。条目带 downloaded 标记——日志已下载的可直接 analyze_report，未下载的先 sync_latest。要的是已分析过的本地记录用 list_issues",
+        description = "列出远端反馈 Issue（未处理/已处理/全部，来自本地缓存镜像，与灵鉴界面问题列表同源，不实时回源）。条目带 downloaded 标记——日志已下载的可直接 analyze_report；未下载的提示用户在灵鉴界面「下载缺失日志」（日志下载归软件本体，MCP 不下载）。要的是已分析过的本地记录用 list_issues；缓存为空先调 sync_latest",
         annotations(read_only_hint = true)
     )]
     async fn list_remote_issues(
         &self,
         Parameters(ListRemoteIssuesParams { state, page }): Parameters<ListRemoteIssuesParams>,
     ) -> Result<Json<RemoteIssueListResult>, ErrorData> {
-        let (scf_url, api_key) = self.scf_config()?;
+        let _ = self.scf_config()?;
         let cache = self.cache();
-        let client = self.app.state::<crate::AppState>().client.clone();
 
         let st = match state.as_deref().unwrap_or("open") {
             "all" => "all",
@@ -607,20 +504,6 @@ impl LingjianServer {
             _ => "open",
         };
         let pg = page.unwrap_or(1).max(1);
-
-        // 缓存为空（首次使用）时同步一次，避免返回空列表误导；
-        // 与 issue_stats 同策略：同步失败不阻断，计数/列表本来就是尽力而为
-        let ensure = {
-            let c = cache.clone();
-            let s = st.to_string();
-            tauri::async_runtime::spawn_blocking(move || c.list_issues(&s, 1, 1))
-                .await
-                .map_err(|e| ErrorData::internal_error(format!("查询任务失败: {e}"), None))?
-                .map_err(|e| ErrorData::internal_error(format!("读取 Issue 缓存失败: {e}"), None))?
-        };
-        if ensure.0.is_empty() {
-            let _ = crate::commands::issue::sync_cache_incremental(&scf_url, &api_key, &client, &cache).await;
-        }
 
         let (items, has_more) = {
             let c = cache.clone();

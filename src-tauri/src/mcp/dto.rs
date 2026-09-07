@@ -269,21 +269,6 @@ pub struct QueryLogsResult {
 
 // ===== 二期：同步与写操作（需设置页开启"允许写操作"，sync_latest 除外） =====
 
-/// sync_latest 入参
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct SyncLatestParams {
-    /// Issue 状态筛选：open / closed / all，默认 open
-    #[serde(default)]
-    pub state: Option<String>,
-    /// 页码，默认 1
-    #[serde(default)]
-    pub page: Option<u32>,
-    /// 是否下载缺失的日志到本地（默认 true；false 时仅返回远端列表）
-    #[serde(default)]
-    pub download: Option<bool>,
-}
-
 /// SCF 侧 Issue 列表条目
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

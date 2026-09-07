@@ -16,6 +16,13 @@ export interface IssueCounts {
   all: number
 }
 
+/** 下载缺失日志的结果（download_missing_reports 返回） */
+export interface DownloadMissingResult {
+  downloaded: number
+  skipped: number
+  failed: string[]
+}
+
 interface IssuesState {
   /** 当前列表（跨页累积） */
   issues: IssueListItem[]
@@ -40,6 +47,10 @@ interface IssuesState {
   cachedAt: string | null
   /** 各状态 Issue 数（tab 徽标；null = 尚未加载） */
   counts: IssueCounts | null
+  /** 下载缺失日志进行中（按钮禁用与文案用） */
+  downloading: boolean
+  /** 最近一次下载缺失日志的结果（downloaded/skipped/failed 摘要） */
+  downloadResult: string | null
 }
 
 const state = reactive<IssuesState>({
@@ -56,6 +67,8 @@ const state = reactive<IssuesState>({
   fromCache: false,
   cachedAt: null,
   counts: null,
+  downloading: false,
+  downloadResult: null,
 })
 
 /** 重置列表到初始状态（切换 tab / 手动刷新时用） */
@@ -216,7 +229,39 @@ export function resetIssuesState() {
     fromCache: false,
     cachedAt: null,
     counts: null,
+    downloading: false,
+    downloadResult: null,
   })
+}
+
+/**
+ * 下载缺失日志（软件本体的下载入口，MCP 侧只读不下载）。
+ * 增量同步列表镜像后逐条下载本地没有的日志（默认当前 tab 状态），
+ * 完成后刷新列表与计数。结果摘要写入 downloadResult 供界面提示。
+ */
+export async function downloadMissing(): Promise<void> {
+  if (!settings.scfUrl.trim() || !settings.apiKey.trim()) {
+    state.downloadResult = '未配置 SCF 端点，请先到设置页填写'
+    return
+  }
+  state.downloading = true
+  state.downloadResult = null
+  try {
+    const result = await invoke<DownloadMissingResult>('download_missing_reports', {
+      state: state.state,
+      scfUrl: settings.scfUrl,
+      apiKey: settings.apiKey,
+    })
+    const parts = [`新下载 ${result.downloaded} 条`, `已有 ${result.skipped} 条`]
+    if (result.failed.length > 0) parts.push(`失败 ${result.failed.length} 条`)
+    state.downloadResult = parts.join('，')
+    // 下载完成后刷新列表与计数（新日志可分析了，列表数据也更新了）
+    await Promise.all([loadIssues(), refreshCounts()])
+  } catch (e) {
+    state.downloadResult = `下载失败: ${typeof e === 'string' ? e : String(e)}`
+  } finally {
+    state.downloading = false
+  }
 }
 
 export function useIssues() {
@@ -228,5 +273,6 @@ export function useIssues() {
     actOnIssue,
     clearActionError,
     refreshCounts,
+    downloadMissing,
   }
 }
