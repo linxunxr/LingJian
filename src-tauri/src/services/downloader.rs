@@ -1,12 +1,14 @@
 use flate2::read::GzDecoder;
 use regex::Regex;
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::io::Read;
 use std::path::Path;
 use std::sync::OnceLock;
 
 use crate::models::log_entry::{LogEntry, LogLevel};
 use crate::services::github::{IssueActionResponse, IssueInfo, IssueList};
+use crate::services::text_log;
 
 /// 将 SCF 响应反序列化为 T，失败时把响应原文带进错误信息，便于诊断。
 ///
@@ -50,17 +52,12 @@ enum LogPayload {
         #[allow(dead_code)]
         exported_at: Option<String>,
         logs: Vec<RawLog>,
+        /// 主进程落盘日志尾部行（挂机仙途 v0.22.1+ 上报）：渲染内存日志随进程
+        /// 重启清零，这里携带的是磁盘上仍存留的记录（含上一次会话的临终日志）
+        #[serde(default, rename = "mainLogTail")]
+        main_log_tail: Vec<String>,
     },
     Bare(Vec<RawLog>),
-}
-
-impl LogPayload {
-    fn into_logs(self) -> Vec<RawLog> {
-        match self {
-            LogPayload::Wrapped { logs, .. } => logs,
-            LogPayload::Bare(v) => v,
-        }
-    }
 }
 
 /// 原始日志字段，兼容上游可能存在的字段名差异
@@ -444,15 +441,50 @@ fn decode_gzip(bytes: &[u8]) -> Result<Vec<LogEntry>, String> {
 /// 解析 JSON 文本（gzip 解压后或本地 JSON 日志）为日志条目
 ///
 /// 供 SCF 下载流程与本地导入（JSON 格式探测）共用。
+/// 包裹对象携带 `mainLogTail`（主进程落盘尾部行）时，解析并入并去重。
 pub fn parse_json_logs(text: &str) -> Result<Vec<LogEntry>, String> {
     let payload: LogPayload =
         serde_json::from_str(text).map_err(|e| format!("JSON 解析失败: {e}"))?;
 
-    payload
-        .into_logs()
+    let (raw_logs, main_log_tail) = match payload {
+        LogPayload::Wrapped { logs, main_log_tail, .. } => (logs, main_log_tail),
+        LogPayload::Bare(v) => (v, Vec::new()),
+    };
+    let mem: Vec<LogEntry> = raw_logs
         .into_iter()
         .map(RawLog::into_entry)
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(merge_main_log_tail(mem, &main_log_tail))
+}
+
+/// 合并渲染内存日志与主进程落盘尾部
+///
+/// 磁盘尾部与内存日志在「本次会话最近一段」天然重叠（同一条日志既落盘又留
+/// 内存），按全字段精确匹配去重。合并后磁盘独有的历史条目（上一次会话的
+/// 临终记录）排在内存条目之前，保持时间正序——下游按插入序（seq）展示时间线。
+fn merge_main_log_tail(mut mem: Vec<LogEntry>, tail_lines: &[String]) -> Vec<LogEntry> {
+    if tail_lines.is_empty() {
+        return mem;
+    }
+    let tail = text_log::parse_main_log_tail(tail_lines);
+    if tail.is_empty() {
+        return mem;
+    }
+    let mem_keys: HashSet<String> = mem.iter().map(entry_dedup_key).collect();
+    let mut merged: Vec<LogEntry> = tail
+        .into_iter()
+        .filter(|e| !mem_keys.contains(&entry_dedup_key(e)))
+        .collect();
+    merged.append(&mut mem);
+    merged
+}
+
+/// 去重键：时间戳 + 级别 + 标签 + 消息 + data 序列化文本全等才视为同一条。
+/// 时间粒度为秒，同秒多条全同的真实日志会被折损一条；相比时间线整体翻倍的
+/// 干扰，这是更优取舍。
+fn entry_dedup_key(e: &LogEntry) -> String {
+    let data = e.data.as_ref().map(|d| d.to_string()).unwrap_or_default();
+    format!("{}|{}|{}|{}|{}", e.timestamp, e.level.as_str(), e.tag, e.message, data)
 }
 
 #[cfg(test)]
@@ -554,6 +586,56 @@ mod tests {
         let gz = gzip_json(json);
         let entries = decode_gzip(&gz).unwrap();
         assert_eq!(entries[0].tag, "TAG");
+    }
+
+    #[test]
+    fn decode_main_log_tail_merged_and_deduped() {
+        // 磁盘尾部含上一次会话条目 + 与内存重叠的当前会话条目：
+        // 独有条目排在内存条目之前（时间正序），重叠条目精确去重
+        let json = r#"{"logs":[
+            {"timestamp":"2026-10-05 12:00:10","level":"INFO","tag":"战斗","message":"战斗结束","data":{"win":true}},
+            {"timestamp":"2026-10-05 12:00:20","level":"WARN","tag":"战斗","message":"血量低"}
+        ],"mainLogTail":[
+            "[2026-10-04 23:59:59] [WARN ] [FreezeDetector] 主线程阻塞约 8 秒后恢复",
+            "===== game-2026-10-05.log =====",
+            "[2026-10-05 12:00:10] [INFO ] [战斗] 战斗结束",
+            "  Data: {\"win\":true}",
+            "[2026-10-05 12:00:20] [WARN ] [战斗] 血量低"
+        ]}"#;
+        let gz = gzip_json(json);
+        let entries = decode_gzip(&gz).unwrap();
+        // 5 条原始（1 磁盘独有 + 2 重叠 + 2 内存）去重后 3 条
+        assert_eq!(entries.len(), 3);
+        // 磁盘独有的历史条目排最前
+        assert_eq!(entries[0].tag, "FreezeDetector");
+        assert!(entries[0].message.contains("阻塞约 8 秒"));
+        // 重叠条目只保留一份（内存份），data 结构化还原一致
+        assert_eq!(entries[1].message, "战斗结束");
+        assert_eq!(entries[1].data, Some(serde_json::json!({"win": true})));
+        assert_eq!(entries[2].message, "血量低");
+    }
+
+    #[test]
+    fn decode_main_log_tail_absent_unchanged() {
+        // 老格式无 mainLogTail 字段，行为不变
+        let json = r#"{"logs":[
+            {"timestamp":"t","level":"INFO","tag":"战斗","message":"单条"}
+        ]}"#;
+        let gz = gzip_json(json);
+        let entries = decode_gzip(&gz).unwrap();
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn decode_main_log_tail_unparseable_lines_ignored() {
+        // 尾部行无法解析（非日志格式）时不影响内存条目
+        let json = r#"{"logs":[
+            {"timestamp":"t","level":"INFO","tag":"战斗","message":"单条"}
+        ],"mainLogTail":["随便一行","another"]}"#;
+        let gz = gzip_json(json);
+        let entries = decode_gzip(&gz).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].message, "单条");
     }
 
     #[test]
